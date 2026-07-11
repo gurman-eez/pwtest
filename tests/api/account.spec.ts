@@ -108,8 +108,17 @@ test.describe('Account API', () => {
     createdAccounts.push(account);
 
     // Same email/password as the original so cleanup and the follow-up lookup still work;
-    // every other field changes, proving the update actually took effect.
-    const updated = buildRandomAccount({ email: account.email, password: account.password });
+    // distinct literal overrides for all asserted fields prove the server actually persisted them.
+    const updated = buildRandomAccount({
+      email: account.email,
+      password: account.password,
+      firstName: 'UpdatedFirstName',
+      address1: '123 New Street',
+      city: 'Boston',
+      state: 'MA',
+      zipcode: '02101',
+      country: 'Canada',
+    });
     const updateResponse = await apiClient.updateAccount(updated);
 
     // Verified live: a successful update is 200, not 201 — no new resource is created.
