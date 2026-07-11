@@ -34,6 +34,11 @@ jobs:
           # Keep stdout free of ANSI codes so the parsing step below can grep/awk it reliably.
           FORCE_COLOR: '0'
         run: |
+          # Without pipefail, bash's exit code for a pipeline is tee's (always 0, since it
+          # can always write the log), so a failing `playwright test` would be masked and
+          # this step — and the job — would report success. Not the default here (`bash -e`,
+          # no `-o pipefail`), so it's set explicitly.
+          set -o pipefail
           # No --reporter override: playwright.config.ts already configures list (stdout,
           # parsed below) + html (playwright-report/, uploaded below) together.
           npx playwright test | tee playwright-output.log
@@ -70,6 +75,10 @@ jobs:
         env:
           FORCE_COLOR: '0'
         run: |
+          # See the e2e job's matching step: without this, a failing `playwright test`
+          # would be masked by tee's own (always-0) exit code and the job would report
+          # success regardless of test results.
+          set -o pipefail
           npx playwright test tests/api/ | tee playwright-output.log
 
       - name: Report results
