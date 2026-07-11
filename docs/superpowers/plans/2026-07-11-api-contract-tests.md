@@ -32,7 +32,7 @@ These were captured with `curl` and a throwaway Playwright `request` probe befor
 | `deleteAccount` valid | 200 | `"Account deleted!"` |
 | `deleteAccount` on already-deleted account | 404 | `"Account not found!"` (different wording than `getUserDetailByEmail`'s 404 message) |
 | `getProductsList` | 200 | `products: [{id, name, price: "Rs. N", brand, category: {usertype: {usertype}, category}}, ...]` |
-| `searchProduct('top')` | 200 | non-empty `products`, every name contains "top" |
+| `searchProduct('top')` | 200 | non-empty `products`, 14 results; matching is name-OR-category, not name-only — e.g. id 18 "Little Girls Mr. Panda Shirt" matches via category "Tops & Shirts", not its name (found by the Task 2 implementer subagent; corrected mid-execution, my original probe's 800-char truncated output masked this) |
 | `searchProduct('zzzz...nonexistent')` | 200 | `products: []` — empty, not an error |
 | `searchProduct('')` (empty value, key present) | 200 | full, unfiltered product list (same as `getProductsList`) |
 | `searchProduct` with `search_product` key fully absent | 400 | `"Bad request, search_product parameter is missing in POST request."` |
@@ -280,10 +280,15 @@ test.describe('Products API', () => {
     const response = await apiClient.searchProduct('top');
 
     assertResponseCode(response, 200);
-    const products = response.products as Array<{ name: string }>;
+    const products = response.products as Array<{ name: string; category: { category: string } }>;
     expect(products.length).toBeGreaterThan(0);
+    // Quirk verified live: the match isn't name-only. E.g. "Little Girls Mr. Panda Shirt"
+    // (id 18, category "Tops & Shirts") is returned for the keyword "top" even though "top"
+    // never appears in its name — matching also considers the category text. The honest
+    // assertion checks name OR category, not name alone.
     for (const product of products) {
-      expect(product.name.toLowerCase()).toContain('top');
+      const haystack = `${product.name} ${product.category.category}`.toLowerCase();
+      expect(haystack).toContain('top');
     }
   });
 
