@@ -1,0 +1,88 @@
+name: 'Report Playwright results'
+description: >-
+  Parses a captured `playwright test` list-reporter log, posts a pass/fail
+  summary to Slack (verbose with failed test titles on failure), and uploads
+  the HTML report. Shared by every job that runs a Playwright suite in CI.
+
+inputs:
+  log-file:
+    description: 'Path to the captured playwright list-reporter stdout (e.g. from `... | tee playwright-output.log`)'
+    required: true
+  label:
+    description: 'Short label identifying this run in the Slack message, e.g. "e2e" or "API tests"'
+    required: true
+  artifact-name:
+    description: 'Name for the uploaded playwright-report artifact (must be unique across jobs in the same workflow run)'
+    required: true
+  slack-webhook-url:
+    description: 'Slack incoming webhook URL. Composite actions cannot read the caller''s secrets context directly, so the caller must pass it explicitly.'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Parse Playwright results
+      id: parse-results
+      if: always()
+      shell: bash
+      run: |
+        LOG_FILE="${{ inputs.log-file }}"
+        LABEL="${{ inputs.label }}"
+
+        PASSED=$(grep -oE '^[[:space:]]*[0-9]+ passed' "$LOG_FILE" | grep -oE '[0-9]+' | tail -1 || true)
+        FAILED=$(grep -oE '^[[:space:]]*[0-9]+ failed' "$LOG_FILE" | grep -oE '[0-9]+' | tail -1 || true)
+        PASSED=${PASSED:-0}
+        FAILED=${FAILED:-0}
+        TOTAL=$((PASSED + FAILED))
+
+        # The list reporter prints failed test titles as an indented block right after the
+        # "N failed" summary line and right before the final "N passed (Xs)" line.
+        FAILED_TITLES=$(awk '/^[[:space:]]*[0-9]+ failed[[:space:]]*$/{flag=1; next} /^[[:space:]]*[0-9]+ passed/{flag=0} flag && NF {sub(/^[[:space:]]+/, ""); print}' "$LOG_FILE")
+
+        case "${{ github.event_name }}" in
+          schedule) TRIGGER="schedule" ;;
+          pull_request) TRIGGER="PR" ;;
+          *) TRIGGER="${{ github.event_name }}" ;;
+        esac
+
+        RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+
+        if [ "$FAILED" -eq 0 ]; then
+          MESSAGE="✅ ${PASSED}/${TOTAL} ${LABEL} passed (${TRIGGER})"
+        else
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            HEADER="❌ ${FAILED}/${TOTAL} ${LABEL} failed — smoke test failure on live site (${TRIGGER})"
+          else
+            HEADER="❌ ${FAILED}/${TOTAL} ${LABEL} failed (${TRIGGER})"
+          fi
+
+          TITLES_LIST=$(echo "$FAILED_TITLES" | awk '{print "• " $0}')
+
+          MESSAGE=$(printf '%s\n\nFailed tests:\n%s\n\n<%s|View run>' "$HEADER" "$TITLES_LIST" "$RUN_URL")
+        fi
+
+        {
+          echo "slack_message<<SLACK_MESSAGE_EOF"
+          echo "$MESSAGE"
+          echo "SLACK_MESSAGE_EOF"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Notify Slack
+      if: always()
+      continue-on-error: true
+      uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3.0.3
+      with:
+        webhook: ${{ inputs.slack-webhook-url }}
+        webhook-type: incoming-webhook
+        payload: |
+          {
+            "text": ${{ toJSON(steps.parse-results.outputs.slack_message) }}
+          }
+
+    - name: Upload Playwright report
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ inputs.artifact-name }}
+        path: playwright-report/
+        retention-days: 14
