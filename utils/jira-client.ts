@@ -4,7 +4,13 @@ export interface JiraConfig {
   apiToken: string;
 }
 
-export type JiraIssueType = 'Bug' | 'Task';
+/**
+ * Exact issue type name as configured in the target project — not a fixed enum, since Jira
+ * projects can rename/localize their own types (this one's "Bug" type is literally named
+ * "Баг"). Verify via GET /rest/api/3/issue/createmeta?projectKeys=<key>&expand=projects.issuetypes
+ * rather than assuming "Bug" works everywhere.
+ */
+export type JiraIssueType = string;
 
 export interface CreateIssueParams {
   projectKey: string;
@@ -27,6 +33,15 @@ export interface JiraUser {
   displayName: string;
   emailAddress?: string;
   [key: string]: unknown;
+}
+
+export interface JiraSearchIssue {
+  key: string;
+  fields: {
+    summary: string;
+    status?: { name: string; statusCategory?: { key: string } };
+    labels?: string[];
+  };
 }
 
 /**
@@ -67,15 +82,16 @@ export class JiraClient {
       fields: {
         project: { key: params.projectKey },
         summary: params.summary,
+        // ADF text nodes don't interpret "\n" as line breaks, so each line of the input
+        // string becomes its own paragraph (blank lines -> empty paragraphs) instead of one
+        // run-on blob.
         description: {
           type: 'doc',
           version: 1,
-          content: [
-            {
-              type: 'paragraph',
-              content: [{ type: 'text', text: params.description }],
-            },
-          ],
+          content: params.description.split('\n').map((line) => ({
+            type: 'paragraph',
+            content: line ? [{ type: 'text', text: line }] : [],
+          })),
         },
         issuetype: { name: params.type },
         labels,
@@ -88,6 +104,17 @@ export class JiraClient {
   /** GET /rest/api/3/myself — returns the authenticated user; used to sanity-check credentials. */
   async getCurrentUser(): Promise<JiraUser | null> {
     return this.request('GET', '/rest/api/3/myself');
+  }
+
+  /**
+   * GET /rest/api/3/search/jql — runs a JQL query (the pre-2025 /rest/api/3/search endpoint
+   * is retired, returns 410 Gone). Used to check for an existing open issue before filing a
+   * new one for the same failure.
+   */
+  async searchIssues(jql: string, maxResults = 50): Promise<JiraSearchIssue[] | null> {
+    const params = new URLSearchParams({ jql, maxResults: String(maxResults), fields: 'summary,status,labels' });
+    const data = await this.request<{ issues: JiraSearchIssue[] }>('GET', `/rest/api/3/search/jql?${params}`);
+    return data ? data.issues : null;
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T | null> {

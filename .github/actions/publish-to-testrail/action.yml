@@ -1,10 +1,15 @@
-name: 'Publish results to TestRail'
+name: 'Publish results to TestRail and file Jira bugs for stable failures'
 description: >-
   Parses a Playwright JSON report for TestRail case-id annotations
   (`{ type: 'testrail', description: 'C<id>' }`), creates a TestRail run
   scoped to exactly those cases, and publishes each one's pass/fail result.
-  Shared by every job that reports Playwright results into TestRail. Tests
-  without a TestRail annotation are silently skipped.
+  In the same step, right after — reusing that same parsed report, no
+  second read/parse — files a Jira bug for every test that failed on its
+  initial attempt AND every retry (a flaky test that passed on retry does
+  not get one). Shared by every job that reports into TestRail/Jira; tests
+  without a TestRail annotation are silently skipped for TestRail, and
+  Jira filing is skipped entirely if jira-project-key is left empty (how
+  the api-tests job currently opts out).
 
 inputs:
   report-json-path:
@@ -16,18 +21,41 @@ inputs:
   run-name:
     description: 'Name for the TestRail run created for this CI run'
     required: true
+  report-url:
+    description: >-
+      Predictable URL to this run's published Playwright HTML report (same value passed to
+      report-to-slack), included in any Jira bug's description.
+    required: true
+  jira-project-key:
+    description: 'Jira project key to file bugs in, e.g. "SCRUM". Leave empty to skip Jira filing entirely for this job.'
+    required: false
+    default: ''
+  jira-bug-type:
+    description: 'Exact issue type name configured in the target Jira project for bug reports (not always literally "Bug" — this project uses its own localized name)'
+    required: false
+    default: 'Bug'
+  jira-dedup-days:
+    description: 'Lookback window (days) for the duplicate-bug check by label/summary before filing a new one'
+    required: false
+    default: '7'
 
 runs:
   using: composite
   steps:
-    - name: Publish to TestRail
-      # Reporting is best-effort: a TestRail/network hiccup here must not fail the job whose
-      # actual job is running the Playwright suite. TESTRAIL_URL/EMAIL/API_KEY/PROJECT_ID are
-      # read directly from env by TestRailClient — set them at the calling job level.
+    - name: Publish to TestRail and file Jira bugs
+      # Reporting is best-effort: a TestRail/Jira/network hiccup here must not fail the job
+      # whose actual job is running the Playwright suite. TESTRAIL_URL/EMAIL/API_KEY/PROJECT_ID
+      # and JIRA_URL/EMAIL/API_TOKEN are read directly from env by their respective clients —
+      # set them at the calling job level.
       shell: bash
       continue-on-error: true
+      env:
+        JIRA_PROJECT_KEY: ${{ inputs.jira-project-key }}
+        JIRA_BUG_TYPE: ${{ inputs.jira-bug-type }}
+        JIRA_DEDUP_DAYS: ${{ inputs.jira-dedup-days }}
       run: |
         node --experimental-strip-types scripts/publish-testrail-results.ts \
           "${{ inputs.report-json-path }}" \
           "${{ inputs.testrail-suite-id }}" \
-          "${{ inputs.run-name }}"
+          "${{ inputs.run-name }}" \
+          "${{ inputs.report-url }}"
