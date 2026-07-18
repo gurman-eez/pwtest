@@ -8,9 +8,9 @@ description: >-
 inputs:
   job-status:
     description: >-
-      Overall job status so far, e.g. ${{ job.status }}. Treated as a failure
-      unless exactly "success" — catches cases where the test step itself
-      crashed before producing a parseable summary line.
+      Overall job status so far, e.g. the job.status context. Treated as a
+      failure unless exactly "success" — catches cases where the test step
+      itself crashed before producing a parseable summary line.
     required: true
   test-summary-path:
     description: 'Path to the captured playwright list-reporter stdout (e.g. from `... | tee playwright-output.log`)'
@@ -19,7 +19,7 @@ inputs:
     description: 'Short label identifying this run in the Slack message, e.g. "login-signup" or "API tests"'
     required: true
   trigger-type:
-    description: 'Raw ${{ github.event_name }} from the calling workflow (mapped to "PR"/"schedule"/raw value in the message)'
+    description: 'Raw github.event_name value from the calling workflow (mapped to "PR"/"schedule"/raw value in the message)'
     required: true
   webhook-url:
     description: 'Slack incoming webhook URL. Composite actions cannot read the caller''s secrets context directly, so the caller must pass it explicitly.'

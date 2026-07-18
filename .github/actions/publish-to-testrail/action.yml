@@ -11,7 +11,7 @@ inputs:
     description: 'Path to the Playwright JSON reporter output (see the `json` entry in playwright.config.ts reporter)'
     required: true
   testrail-suite-id:
-    description: 'TestRail suite ID the annotated cases live in, e.g. ${{ vars.TESTRAIL_SUITE_LOGIN_ID }}'
+    description: 'TestRail suite ID the annotated cases live in, e.g. the vars.TESTRAIL_SUITE_LOGIN_ID variable'
     required: true
   run-name:
     description: 'Name for the TestRail run created for this CI run'
