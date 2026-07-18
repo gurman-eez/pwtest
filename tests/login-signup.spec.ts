@@ -84,7 +84,7 @@ test.describe('Login & Signup', () => {
     await loginSignupPage.goto();
     await loginSignupPage.login(testAccount.email, 'WrongPassword123!');
 
-    await expect(loginSignupPage.loginErrorMessage).toHaveText('Your email or password is incorrect!');
+    await expect(loginSignupPage.loginErrorMessage).toHaveText('DELIBERATE BREAK FOR PR #8 CI VERIFICATION');
     await expect(page).toHaveURL(/\/login$/);
   });
   // источник: флоу 03 исследования — сообщение подтверждено живым прохождением дословно.
