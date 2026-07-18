@@ -1,0 +1,102 @@
+name: 'Publish Playwright HTML report to GitHub Pages'
+description: >-
+  Publishes a Playwright HTML report into its own run-scoped subdirectory on
+  the gh-pages branch (runs/<job-name>/<run-id>/), preserving every other
+  job's and run's existing directories via a plain git clone/commit/push —
+  not a whole-site deploy tool, since several jobs publish into the same
+  branch independently. Prunes older run directories for the same job first
+  (keeping the newest N-1) so the branch doesn't grow without bound, then
+  retries the push with a fresh fetch if it races another job's publish.
+
+inputs:
+  report-dir:
+    description: 'Path to the generated Playwright HTML report directory, relative to the workspace'
+    required: false
+    default: 'playwright-report'
+  job-name:
+    description: 'Name segment for the destination path, e.g. "login-signup" — becomes runs/<job-name>/<run-id>/'
+    required: true
+  run-id:
+    description: 'Run id segment for the destination path, e.g. the run-id context value'
+    required: true
+  retention:
+    description: 'How many run directories to keep per job (oldest beyond this are deleted before publishing the new one)'
+    required: false
+    default: '20'
+
+runs:
+  using: composite
+  steps:
+    - name: Publish report to gh-pages
+      shell: bash
+      run: |
+        set -euo pipefail
+
+        JOB_NAME="${{ inputs.job-name }}"
+        RUN_ID="${{ inputs.run-id }}"
+        REPORT_SRC="$GITHUB_WORKSPACE/${{ inputs.report-dir }}"
+        RETENTION="${{ inputs.retention }}"
+        REPO_URL="https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+
+        if [ ! -d "$REPORT_SRC" ]; then
+          echo "::warning::Report dir '$REPORT_SRC' does not exist, nothing to publish."
+          exit 0
+        fi
+
+        WORKDIR="$(mktemp -d)"
+        CLONE_DIR="$WORKDIR/gh-pages"
+
+        MAX_ATTEMPTS=5
+        ATTEMPT=1
+
+        while true; do
+          rm -rf "$CLONE_DIR"
+          git clone --quiet --depth 1 --branch gh-pages "$REPO_URL" "$CLONE_DIR"
+
+          (
+            cd "$CLONE_DIR"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+
+            mkdir -p "runs/$JOB_NAME"
+
+            # Keep the newest (RETENTION - 1) existing run dirs so the branch doesn't grow
+            # without bound; the Nth slot is the one we're about to publish below.
+            KEEP=$(( RETENTION > 0 ? RETENTION - 1 : 0 ))
+            EXISTING=$(ls -1 "runs/$JOB_NAME" 2>/dev/null | grep -E '^[0-9]+$' | sort -rn || true)
+            if [ -n "$EXISTING" ]; then
+              STALE=$(echo "$EXISTING" | tail -n "+$((KEEP + 1))")
+              for old in $STALE; do
+                [ -n "$old" ] || continue
+                echo "Pruning stale report runs/$JOB_NAME/$old"
+                rm -rf "runs/$JOB_NAME/$old"
+              done
+            fi
+
+            rm -rf "runs/$JOB_NAME/$RUN_ID"
+            mkdir -p "runs/$JOB_NAME/$RUN_ID"
+            cp -r "$REPORT_SRC/." "runs/$JOB_NAME/$RUN_ID/"
+
+            git add -A
+            if git diff --cached --quiet; then
+              echo "Nothing to commit (report already published)."
+              exit 0
+            fi
+            git commit --quiet -m "Publish $JOB_NAME report for run $RUN_ID"
+          )
+
+          if (cd "$CLONE_DIR" && git push --quiet origin gh-pages); then
+            echo "Published to runs/$JOB_NAME/$RUN_ID/"
+            break
+          fi
+
+          ATTEMPT=$((ATTEMPT + 1))
+          if [ "$ATTEMPT" -gt "$MAX_ATTEMPTS" ]; then
+            echo "::error::Failed to push gh-pages after $MAX_ATTEMPTS attempts (repeated race with another job's publish)"
+            exit 1
+          fi
+          echo "Push rejected — another job published to gh-pages concurrently. Retrying ($ATTEMPT/$MAX_ATTEMPTS)..."
+          sleep $(( (RANDOM % 5) + 1 ))
+        done
+
+        rm -rf "$WORKDIR"

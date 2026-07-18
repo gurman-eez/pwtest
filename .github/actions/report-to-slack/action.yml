@@ -24,6 +24,13 @@ inputs:
   webhook-url:
     description: 'Slack incoming webhook URL. Composite actions cannot read the caller''s secrets context directly, so the caller must pass it explicitly.'
     required: true
+  report-url:
+    description: >-
+      Predictable URL to this run's published Playwright HTML report (e.g. GitHub Pages
+      runs/<job-name>/<run-id>/), built by the caller job before this action is called.
+      Included in both the success and failure Slack messages; unrelated to TestRail
+      publishing, which is a separate step run independently in the same job.
+    required: true
 
 runs:
   using: composite
@@ -36,6 +43,7 @@ runs:
         LOG_FILE="${{ inputs.test-summary-path }}"
         LABEL="${{ inputs.label }}"
         JOB_STATUS="${{ inputs.job-status }}"
+        REPORT_URL="${{ inputs.report-url }}"
 
         PASSED=$(grep -oE '^[[:space:]]*[0-9]+ passed' "$LOG_FILE" | grep -oE '[0-9]+' | tail -1 || true)
         FAILED=$(grep -oE '^[[:space:]]*[0-9]+ failed' "$LOG_FILE" | grep -oE '[0-9]+' | tail -1 || true)
@@ -56,7 +64,7 @@ runs:
         RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
         if [ "$JOB_STATUS" = "success" ] && [ "$FAILED" -eq 0 ]; then
-          MESSAGE="✅ ${PASSED}/${TOTAL} ${LABEL} passed (${TRIGGER})"
+          MESSAGE="✅ ${PASSED}/${TOTAL} ${LABEL} passed (${TRIGGER}) — <${REPORT_URL}|Report>"
         else
           if [ "${{ inputs.trigger-type }}" = "schedule" ]; then
             HEADER="❌ ${FAILED}/${TOTAL} ${LABEL} failed — smoke test failure on live site (${TRIGGER})"
@@ -66,7 +74,7 @@ runs:
 
           TITLES_LIST=$(echo "$FAILED_TITLES" | awk '{print "• " $0}')
 
-          MESSAGE=$(printf '%s\n\nFailed tests:\n%s\n\n<%s|View run>' "$HEADER" "$TITLES_LIST" "$RUN_URL")
+          MESSAGE=$(printf '%s\n\nFailed tests:\n%s\n\n<%s|View run> · <%s|HTML report>' "$HEADER" "$TITLES_LIST" "$RUN_URL" "$REPORT_URL")
         fi
 
         {
