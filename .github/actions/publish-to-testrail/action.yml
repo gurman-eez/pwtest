@@ -1,0 +1,33 @@
+name: 'Publish results to TestRail'
+description: >-
+  Parses a Playwright JSON report for TestRail case-id annotations
+  (`{ type: 'testrail', description: 'C<id>' }`), creates a TestRail run
+  scoped to exactly those cases, and publishes each one's pass/fail result.
+  Shared by every job that reports Playwright results into TestRail. Tests
+  without a TestRail annotation are silently skipped.
+
+inputs:
+  report-json-path:
+    description: 'Path to the Playwright JSON reporter output (see the `json` entry in playwright.config.ts reporter)'
+    required: true
+  testrail-suite-id:
+    description: 'TestRail suite ID the annotated cases live in, e.g. the vars.TESTRAIL_SUITE_LOGIN_ID variable'
+    required: true
+  run-name:
+    description: 'Name for the TestRail run created for this CI run'
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Publish to TestRail
+      # Reporting is best-effort: a TestRail/network hiccup here must not fail the job whose
+      # actual job is running the Playwright suite. TESTRAIL_URL/EMAIL/API_KEY/PROJECT_ID are
+      # read directly from env by TestRailClient — set them at the calling job level.
+      shell: bash
+      continue-on-error: true
+      run: |
+        node --experimental-strip-types scripts/publish-testrail-results.ts \
+          "${{ inputs.report-json-path }}" \
+          "${{ inputs.testrail-suite-id }}" \
+          "${{ inputs.run-name }}"

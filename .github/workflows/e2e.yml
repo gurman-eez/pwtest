@@ -9,9 +9,14 @@ on:
   workflow_dispatch:
 
 jobs:
-  e2e:
+  login-signup:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      TESTRAIL_URL: ${{ secrets.TESTRAIL_URL }}
+      TESTRAIL_EMAIL: ${{ secrets.TESTRAIL_EMAIL }}
+      TESTRAIL_API_KEY: ${{ secrets.TESTRAIL_API_KEY }}
+      TESTRAIL_PROJECT_ID: ${{ vars.TESTRAIL_PROJECT_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -19,7 +24,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -40,20 +45,44 @@ jobs:
           # no `-o pipefail`), so it's set explicitly.
           set -o pipefail
           # No --reporter override: playwright.config.ts already configures list (stdout,
-          # parsed below) + html (playwright-report/, uploaded below) together.
-          npx playwright test | tee playwright-output.log
+          # parsed below) + html (playwright-report/, uploaded below) + json (TestRail,
+          # published below) together.
+          npx playwright test tests/login-signup.spec.ts | tee playwright-output.log
 
-      - name: Report results
-        uses: ./.github/actions/pw-report-notify
+      - name: Report to Slack
+        if: always()
+        uses: ./.github/actions/report-to-slack
         with:
-          log-file: playwright-output.log
-          label: e2e
-          artifact-name: playwright-report
-          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          job-status: ${{ job.status }}
+          test-summary-path: playwright-output.log
+          label: login-signup
+          trigger-type: ${{ github.event_name }}
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
 
-  api-tests:
+      - name: Publish to TestRail
+        if: always()
+        uses: ./.github/actions/publish-to-testrail
+        with:
+          report-json-path: test-results/results.json
+          testrail-suite-id: ${{ vars.TESTRAIL_SUITE_LOGIN_ID }}
+          run-name: 'login-signup — ${{ github.event_name }} — run ${{ github.run_id }}'
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-login-signup
+          path: playwright-report/
+          retention-days: 14
+
+  checkout:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    env:
+      TESTRAIL_URL: ${{ secrets.TESTRAIL_URL }}
+      TESTRAIL_EMAIL: ${{ secrets.TESTRAIL_EMAIL }}
+      TESTRAIL_API_KEY: ${{ secrets.TESTRAIL_API_KEY }}
+      TESTRAIL_PROJECT_ID: ${{ vars.TESTRAIL_PROJECT_ID }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -61,7 +90,65 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Install Playwright browsers
+        run: npx playwright install --with-deps chromium
+
+      - name: Run Playwright tests
+        id: run-tests
+        env:
+          FORCE_COLOR: '0'
+        run: |
+          set -o pipefail
+          npx playwright test tests/checkout.spec.ts | tee playwright-output.log
+
+      - name: Report to Slack
+        if: always()
+        uses: ./.github/actions/report-to-slack
+        with:
+          job-status: ${{ job.status }}
+          test-summary-path: playwright-output.log
+          label: checkout
+          trigger-type: ${{ github.event_name }}
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Publish to TestRail
+        if: always()
+        uses: ./.github/actions/publish-to-testrail
+        with:
+          report-json-path: test-results/results.json
+          testrail-suite-id: ${{ vars.TESTRAIL_SUITE_PAYMENT_ID }}
+          run-name: 'checkout — ${{ github.event_name }} — run ${{ github.run_id }}'
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-checkout
+          path: playwright-report/
+          retention-days: 14
+
+  api-tests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      TESTRAIL_URL: ${{ secrets.TESTRAIL_URL }}
+      TESTRAIL_EMAIL: ${{ secrets.TESTRAIL_EMAIL }}
+      TESTRAIL_API_KEY: ${{ secrets.TESTRAIL_API_KEY }}
+      TESTRAIL_PROJECT_ID: ${{ vars.TESTRAIL_PROJECT_ID }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
           cache: npm
 
       - name: Install dependencies
@@ -75,16 +162,39 @@ jobs:
         env:
           FORCE_COLOR: '0'
         run: |
-          # See the e2e job's matching step: without this, a failing `playwright test`
-          # would be masked by tee's own (always-0) exit code and the job would report
-          # success regardless of test results.
+          # See the login-signup/checkout jobs' matching step: without this, a failing
+          # `playwright test` would be masked by tee's own (always-0) exit code and the
+          # job would report success regardless of test results.
           set -o pipefail
           npx playwright test tests/api/ | tee playwright-output.log
 
-      - name: Report results
-        uses: ./.github/actions/pw-report-notify
+      - name: Report to Slack
+        if: always()
+        uses: ./.github/actions/report-to-slack
         with:
-          log-file: playwright-output.log
+          job-status: ${{ job.status }}
+          test-summary-path: playwright-output.log
           label: API tests
-          artifact-name: playwright-report-api
-          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          trigger-type: ${{ github.event_name }}
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      # TODO(testrail-api-coverage): enable once tests/api/*.spec.ts carry TestRail case-id
+      # annotations (`{ type: 'testrail', description: 'C<id>' }`, same pattern as
+      # tests/login-signup.spec.ts / tests/checkout.spec.ts) and a TestRail suite/section
+      # exists for the API contract tests. Wired up now (same composite action as the other
+      # two jobs) but disabled — with no annotated tests, this would just create empty runs.
+      - name: Publish to TestRail
+        if: false
+        uses: ./.github/actions/publish-to-testrail
+        with:
+          report-json-path: test-results/results.json
+          testrail-suite-id: ${{ vars.TESTRAIL_SUITE_API_ID }}
+          run-name: 'API tests — ${{ github.event_name }} — run ${{ github.run_id }}'
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-api
+          path: playwright-report/
+          retention-days: 14

@@ -7,7 +7,9 @@ import { PaymentPage } from '../pages/payment.page';
 // role/text locators directly rather than inventing an unverified attribute.
 
 test.describe('Checkout', () => {
-  test('logged-in user completes an order end to end', async ({ page, testAccount }) => {
+  test('logged-in user completes an order end to end', {
+    annotation: { type: 'testrail', description: 'C51' },
+  }, async ({ page, testAccount }) => {
     const loginSignupPage = new LoginSignupPage(page);
     const paymentPage = new PaymentPage(page);
 
