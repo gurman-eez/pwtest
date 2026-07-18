@@ -15,7 +15,9 @@ test.describe('Login & Signup', () => {
     }
   });
 
-  test('successful registration of a new user', async ({ page }) => {
+  test('successful registration of a new user', {
+    annotation: { type: 'testrail', description: 'C46' },
+  }, async ({ page }) => {
     const account = buildRandomAccount();
     uiCreatedAccount = account;
     const loginSignupPage = new LoginSignupPage(page);
@@ -34,7 +36,9 @@ test.describe('Login & Signup', () => {
   // источник: флоу 02 исследования — "Account Created!" ведёт на / с автоматическим логином
   // ("Logged in as {Name}" в навбаре), без отдельного шага входа.
 
-  test('registration with an already used email shows the existing-account error', async ({
+  test('registration with an already used email shows the existing-account error', {
+    annotation: { type: 'testrail', description: 'C47' },
+  }, async ({
     page,
     testAccount,
   }) => {
@@ -52,7 +56,9 @@ test.describe('Login & Signup', () => {
   // источник: раздел "Валидация форм" исследования (текст ошибки) + верификация вживую через
   // Playwright MCP при отладке этого теста (URL-поведение).
 
-  test('login with an account created via the API (no UI signup)', async ({
+  test('login with an account created via the API (no UI signup)', {
+    annotation: { type: 'testrail', description: 'C48' },
+  }, async ({
     page,
     testAccount,
   }) => {
@@ -67,7 +73,9 @@ test.describe('Login & Signup', () => {
   // источник: карта API — POST /api/createAccount заменяет прохождение формы регистрации
   // для тестов, чьим фокусом является не сама регистрация, а последующий флоу.
 
-  test('login with an existing email but wrong password shows an error', async ({
+  test('login with an existing email but wrong password shows an error', {
+    annotation: { type: 'testrail', description: 'C49' },
+  }, async ({
     page,
     testAccount,
   }) => {
@@ -81,7 +89,9 @@ test.describe('Login & Signup', () => {
   });
   // источник: флоу 03 исследования — сообщение подтверждено живым прохождением дословно.
 
-  test('logout returns the navbar to guest state', async ({ page, testAccount }) => {
+  test('logout returns the navbar to guest state', {
+    annotation: { type: 'testrail', description: 'C50' },
+  }, async ({ page, testAccount }) => {
     const loginSignupPage = new LoginSignupPage(page);
 
     await loginSignupPage.goto();
