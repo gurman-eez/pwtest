@@ -6,7 +6,9 @@ export default defineConfig({
   forbidOnly: !!process.env.CI,
   // Local runs: fail fast, no flake-masking retries. Bump this in CI config if needed later.
   retries: 0,
-  reporter: [['html', { open: 'never' }], ['list']],
+  // json feeds scripts/publish-testrail-results.ts (via the publish-to-testrail composite
+  // action) with each test's TestRail case-id annotation and pass/fail outcome.
+  reporter: [['html', { open: 'never' }], ['list'], ['json', { outputFile: 'test-results/results.json' }]],
 
   use: {
     baseURL: 'https://automationexercise.com',

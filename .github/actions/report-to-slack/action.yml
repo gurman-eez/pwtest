@@ -1,20 +1,27 @@
-name: 'Report Playwright results'
+name: 'Report Playwright results to Slack'
 description: >-
-  Parses a captured `playwright test` list-reporter log, posts a pass/fail
-  summary to Slack (verbose with failed test titles on failure), and uploads
-  the HTML report. Shared by every job that runs a Playwright suite in CI.
+  Parses a captured `playwright test` list-reporter log and posts a pass/fail
+  summary to Slack (verbose with failed test titles on failure). Shared by
+  every job that runs a Playwright suite in CI. Artifact upload is a separate
+  step in the caller — this action only handles the Slack message.
 
 inputs:
-  log-file:
+  job-status:
+    description: >-
+      Overall job status so far, e.g. ${{ job.status }}. Treated as a failure
+      unless exactly "success" — catches cases where the test step itself
+      crashed before producing a parseable summary line.
+    required: true
+  test-summary-path:
     description: 'Path to the captured playwright list-reporter stdout (e.g. from `... | tee playwright-output.log`)'
     required: true
   label:
-    description: 'Short label identifying this run in the Slack message, e.g. "e2e" or "API tests"'
+    description: 'Short label identifying this run in the Slack message, e.g. "login-signup" or "API tests"'
     required: true
-  artifact-name:
-    description: 'Name for the uploaded playwright-report artifact (must be unique across jobs in the same workflow run)'
+  trigger-type:
+    description: 'Raw ${{ github.event_name }} from the calling workflow (mapped to "PR"/"schedule"/raw value in the message)'
     required: true
-  slack-webhook-url:
+  webhook-url:
     description: 'Slack incoming webhook URL. Composite actions cannot read the caller''s secrets context directly, so the caller must pass it explicitly.'
     required: true
 
@@ -26,8 +33,9 @@ runs:
       if: always()
       shell: bash
       run: |
-        LOG_FILE="${{ inputs.log-file }}"
+        LOG_FILE="${{ inputs.test-summary-path }}"
         LABEL="${{ inputs.label }}"
+        JOB_STATUS="${{ inputs.job-status }}"
 
         PASSED=$(grep -oE '^[[:space:]]*[0-9]+ passed' "$LOG_FILE" | grep -oE '[0-9]+' | tail -1 || true)
         FAILED=$(grep -oE '^[[:space:]]*[0-9]+ failed' "$LOG_FILE" | grep -oE '[0-9]+' | tail -1 || true)
@@ -39,18 +47,18 @@ runs:
         # "N failed" summary line and right before the final "N passed (Xs)" line.
         FAILED_TITLES=$(awk '/^[[:space:]]*[0-9]+ failed[[:space:]]*$/{flag=1; next} /^[[:space:]]*[0-9]+ passed/{flag=0} flag && NF {sub(/^[[:space:]]+/, ""); print}' "$LOG_FILE")
 
-        case "${{ github.event_name }}" in
+        case "${{ inputs.trigger-type }}" in
           schedule) TRIGGER="schedule" ;;
           pull_request) TRIGGER="PR" ;;
-          *) TRIGGER="${{ github.event_name }}" ;;
+          *) TRIGGER="${{ inputs.trigger-type }}" ;;
         esac
 
         RUN_URL="${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
 
-        if [ "$FAILED" -eq 0 ]; then
+        if [ "$JOB_STATUS" = "success" ] && [ "$FAILED" -eq 0 ]; then
           MESSAGE="✅ ${PASSED}/${TOTAL} ${LABEL} passed (${TRIGGER})"
         else
-          if [ "${{ github.event_name }}" = "schedule" ]; then
+          if [ "${{ inputs.trigger-type }}" = "schedule" ]; then
             HEADER="❌ ${FAILED}/${TOTAL} ${LABEL} failed — smoke test failure on live site (${TRIGGER})"
           else
             HEADER="❌ ${FAILED}/${TOTAL} ${LABEL} failed (${TRIGGER})"
@@ -72,17 +80,9 @@ runs:
       continue-on-error: true
       uses: slackapi/slack-github-action@45a88b9581bfab2566dc881e2cd66d334e621e2c # v3.0.3
       with:
-        webhook: ${{ inputs.slack-webhook-url }}
+        webhook: ${{ inputs.webhook-url }}
         webhook-type: incoming-webhook
         payload: |
           {
             "text": ${{ toJSON(steps.parse-results.outputs.slack_message) }}
           }
-
-    - name: Upload Playwright report
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ inputs.artifact-name }}
-        path: playwright-report/
-        retention-days: 14

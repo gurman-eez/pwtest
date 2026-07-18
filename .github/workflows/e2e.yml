@@ -43,13 +43,23 @@ jobs:
           # parsed below) + html (playwright-report/, uploaded below) together.
           npx playwright test | tee playwright-output.log
 
-      - name: Report results
-        uses: ./.github/actions/pw-report-notify
+      - name: Report to Slack
+        if: always()
+        uses: ./.github/actions/report-to-slack
         with:
-          log-file: playwright-output.log
+          job-status: ${{ job.status }}
+          test-summary-path: playwright-output.log
           label: e2e
-          artifact-name: playwright-report
-          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          trigger-type: ${{ github.event_name }}
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 14
 
   api-tests:
     runs-on: ubuntu-latest
@@ -81,10 +91,20 @@ jobs:
           set -o pipefail
           npx playwright test tests/api/ | tee playwright-output.log
 
-      - name: Report results
-        uses: ./.github/actions/pw-report-notify
+      - name: Report to Slack
+        if: always()
+        uses: ./.github/actions/report-to-slack
         with:
-          log-file: playwright-output.log
+          job-status: ${{ job.status }}
+          test-summary-path: playwright-output.log
           label: API tests
-          artifact-name: playwright-report-api
-          slack-webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          trigger-type: ${{ github.event_name }}
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+
+      - name: Upload Playwright report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-api
+          path: playwright-report/
+          retention-days: 14
