@@ -44,6 +44,66 @@ export interface JiraSearchIssue {
   };
 }
 
+/** ADF inline text node, optionally carrying a link mark. */
+interface AdfTextNode {
+  type: 'text';
+  text: string;
+  marks?: Array<{ type: string; attrs?: Record<string, unknown> }>;
+}
+
+type AdfBlockNode =
+  | { type: 'paragraph'; content: AdfTextNode[] }
+  | { type: 'codeBlock'; content: AdfTextNode[] };
+
+const URL_PATTERN = /https?:\/\/\S+/g;
+
+/** Splits a paragraph line into text nodes, turning any bare URL into a clickable ADF link mark. */
+function linkifyLine(line: string): AdfTextNode[] {
+  const nodes: AdfTextNode[] = [];
+  let lastIndex = 0;
+  for (const match of line.matchAll(URL_PATTERN)) {
+    const url = match[0];
+    const index = match.index ?? 0;
+    if (index > lastIndex) nodes.push({ type: 'text', text: line.slice(lastIndex, index) });
+    nodes.push({ type: 'text', text: url, marks: [{ type: 'link', attrs: { href: url } }] });
+    lastIndex = index + url.length;
+  }
+  if (lastIndex < line.length) nodes.push({ type: 'text', text: line.slice(lastIndex) });
+  return nodes;
+}
+
+/**
+ * Converts a lightweight text format into ADF blocks: plain lines become paragraphs (with any
+ * bare URL turned into a clickable link), and \`\`\`-fenced lines become a monospaced ADF
+ * codeBlock — used for raw Playwright error text, which reads as an unreadable run-on blob if
+ * pushed through the paragraph/link path instead.
+ */
+export function textToAdf(text: string): AdfBlockNode[] {
+  const lines = text.split('\n');
+  const content: AdfBlockNode[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.trim() === '```') {
+      const codeLines: string[] = [];
+      i++;
+      while (i < lines.length && lines[i].trim() !== '```') {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      i++; // skip closing fence (or end of input if unterminated)
+      content.push({
+        type: 'codeBlock',
+        content: codeLines.length ? [{ type: 'text', text: codeLines.join('\n') }] : [],
+      });
+      continue;
+    }
+    content.push({ type: 'paragraph', content: line ? linkifyLine(line) : [] });
+    i++;
+  }
+  return content;
+}
+
 /**
  * Thin wrapper around the Jira Cloud REST API v3 (https://<host>.atlassian.net/rest/api/3/...).
  * Auth is Basic (account email + API token), Jira Cloud's standard scheme for scripted access.
@@ -82,16 +142,10 @@ export class JiraClient {
       fields: {
         project: { key: params.projectKey },
         summary: params.summary,
-        // ADF text nodes don't interpret "\n" as line breaks, so each line of the input
-        // string becomes its own paragraph (blank lines -> empty paragraphs) instead of one
-        // run-on blob.
         description: {
           type: 'doc',
           version: 1,
-          content: params.description.split('\n').map((line) => ({
-            type: 'paragraph',
-            content: line ? [{ type: 'text', text: line }] : [],
-          })),
+          content: textToAdf(params.description),
         },
         issuetype: { name: params.type },
         labels,

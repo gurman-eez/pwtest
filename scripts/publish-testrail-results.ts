@@ -134,7 +134,9 @@ async function fileJiraBugsForStableFailures(
         caseId !== null ? `TestRail case: C${caseId}${label ? ` (${label})` : ''}` : null,
         '',
         'Last error:',
+        '```',
         lastErrorMessage(test),
+        '```',
       ]
         .filter((line) => line !== null)
         .join('\n');
