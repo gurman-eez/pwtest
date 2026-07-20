@@ -29,6 +29,7 @@ export interface TestRailCase {
   id: number;
   title: string;
   section_id: number;
+  refs?: string | null;
   [key: string]: unknown;
 }
 
@@ -142,6 +143,11 @@ export class TestRailClient {
     );
     if (!data) return null;
     return Array.isArray(data) ? data : data.sections;
+  }
+
+  /** GET /get_case/{case_id} — fetches a single case, used to read its `refs` field for Jira labels. */
+  async getCase(caseId: number): Promise<TestRailCase | null> {
+    return this.request('GET', `/index.php?/api/v2/get_case/${caseId}`);
   }
 
   /** POST /add_section/{project_id} — creates a section in a suite so cases have somewhere to live. */

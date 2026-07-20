@@ -1,32 +1,50 @@
 /**
  * Publishes Playwright results to TestRail for whichever tests carry a
  * `{ type: 'testrail', description: 'C<id>' }` annotation (see fixtures/base.ts
- * usage in tests/login-signup.spec.ts, tests/checkout.spec.ts).
- *
- * Reads the Playwright JSON reporter output (playwright.config.ts's `json`
- * reporter), creates a TestRail run scoped to exactly the annotated cases
- * found, and publishes each one's pass/fail result. Tests without a
- * TestRail annotation are ignored — nothing is force-matched by title.
+ * usage in tests/login-signup.spec.ts, tests/checkout.spec.ts), then — reusing
+ * the same already-parsed report, no second read/parse pass — files a Jira bug
+ * for every test that failed *persistently* (failed on its initial attempt AND
+ * every retry; playwright.config.ts retries once in CI). A test that failed
+ * then passed on retry is "flaky" (e.g. the automationexercise.com
+ * /api/createAccount redirect-loop seen in CI before) and must NOT get a bug —
+ * Playwright's own post-retry `status` field already makes this distinction:
+ * 'unexpected' (still failing) vs 'flaky' (passed on retry) vs 'expected'.
  *
  * Usage: node --experimental-strip-types scripts/publish-testrail-results.ts \
- *   <report-json-path> <testrail-suite-id> <run-name>
+ *   <report-json-path> <testrail-suite-id> <run-name> <report-url>
  *
  * Requires TESTRAIL_URL, TESTRAIL_EMAIL, TESTRAIL_API_KEY, TESTRAIL_PROJECT_ID in env.
+ * Jira bug filing additionally requires JIRA_URL, JIRA_EMAIL, JIRA_API_TOKEN, and
+ * JIRA_PROJECT_KEY — if JIRA_PROJECT_KEY is unset, that stage is skipped entirely
+ * (TestRail publishing above still runs), which is how the api-tests job opts out
+ * for now (same TODO as its disabled TestRail step: no annotations there yet).
  */
 import { readFileSync } from 'node:fs';
 import { TestRailClient, type TestRailResultStatus } from '../utils/testrail-client.ts';
+import { JiraClient } from '../utils/jira-client.ts';
 
 interface PWReportAnnotation {
   type: string;
   description: string;
 }
 
+interface PWReportError {
+  message?: string;
+}
+
+interface PWReportResult {
+  status: string;
+  errors?: PWReportError[];
+}
+
 interface PWReportTest {
   annotations: PWReportAnnotation[];
   status: string;
+  results: PWReportResult[];
 }
 
 interface PWReportSpec {
+  title: string;
   tests: PWReportTest[];
 }
 
@@ -45,11 +63,122 @@ function parseCaseId(description: string): number | null {
   return match ? Number(match[1]) : null;
 }
 
+/** Strips ANSI color codes Playwright embeds in error messages, not useful in a Jira description. */
+function stripAnsi(text: string): string {
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/\x1b\[[0-9;]*m/g, '');
+}
+
+function lastErrorMessage(test: PWReportTest): string {
+  const lastResult = test.results[test.results.length - 1];
+  const message = lastResult?.errors?.[0]?.message;
+  if (!message) return '(no error message captured)';
+  const cleaned = stripAnsi(message).trim();
+  return cleaned.length > 2000 ? `${cleaned.slice(0, 2000)}\n... (truncated)` : cleaned;
+}
+
+function mapTrigger(eventName: string | undefined): string {
+  if (eventName === 'schedule') return 'schedule';
+  if (eventName === 'pull_request') return 'PR';
+  return eventName ?? 'unknown';
+}
+
+/** Escapes a string for use inside a double-quoted JQL literal. */
+function jqlQuote(value: string): string {
+  return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+}
+
+async function fileJiraBugsForStableFailures(
+  specs: PWReportSpec[],
+  jobName: string,
+  runUrl: string,
+  reportUrl: string,
+  triggerType: string
+): Promise<void> {
+  const projectKey = process.env.JIRA_PROJECT_KEY;
+  if (!projectKey) {
+    console.log('[publish-testrail-results] JIRA_PROJECT_KEY is not set — skipping Jira bug filing.');
+    return;
+  }
+
+  const bugType = process.env.JIRA_BUG_TYPE || 'Bug';
+  const dedupDays = Number(process.env.JIRA_DEDUP_DAYS || '7');
+  const jira = new JiraClient();
+
+  const testrailUrl = process.env.TESTRAIL_URL;
+  const testrailEmail = process.env.TESTRAIL_EMAIL;
+  const testrailApiKey = process.env.TESTRAIL_API_KEY;
+  const testrail =
+    testrailUrl && testrailEmail && testrailApiKey
+      ? new TestRailClient({ baseUrl: testrailUrl, email: testrailEmail, apiKey: testrailApiKey })
+      : null;
+
+  for (const spec of specs) {
+    for (const test of spec.tests) {
+      if (test.status !== 'unexpected') continue; // flaky/expected/skipped — not a stable failure
+
+      const annotation = test.annotations.find((a) => a.type === 'testrail');
+      const caseId = annotation ? parseCaseId(annotation.description) : null;
+
+      let label: string | undefined;
+      if (caseId !== null) {
+        const testrailCase = testrail ? await testrail.getCase(caseId) : null;
+        label = testrailCase?.refs ? testrailCase.refs : `testrail-C${caseId}`;
+      }
+
+      const summary = `[${jobName}] ${spec.title} — failing`;
+      const description = [
+        `Trigger: ${triggerType}`,
+        `CI run: ${runUrl}`,
+        `HTML report: ${reportUrl}`,
+        caseId !== null ? `TestRail case: C${caseId}${label ? ` (${label})` : ''}` : null,
+        '',
+        'Last error:',
+        '```',
+        lastErrorMessage(test),
+        '```',
+      ]
+        .filter((line) => line !== null)
+        .join('\n');
+
+      const dedupJql = label
+        ? `project = ${jqlQuote(projectKey)} AND labels = ${jqlQuote(label)} AND created >= -${dedupDays}d AND statusCategory != Done`
+        : `project = ${jqlQuote(projectKey)} AND summary ~ ${jqlQuote(summary)} AND created >= -${dedupDays}d AND statusCategory != Done`;
+
+      const existing = await jira.searchIssues(dedupJql);
+      if (existing === null) {
+        console.error(`[publish-testrail-results] Jira dedup search failed for "${summary}" — skipping to avoid spamming duplicates.`);
+        continue;
+      }
+      if (existing.length > 0) {
+        console.log(
+          `[publish-testrail-results] Duplicate skipped: "${summary}" already open as ${existing.map((i) => i.key).join(', ')}.`
+        );
+        continue;
+      }
+
+      const issue = await jira.createIssue({
+        projectKey,
+        type: bugType,
+        summary,
+        description,
+        labels: label ? [label] : [],
+      });
+
+      if (issue) {
+        console.log(`[publish-testrail-results] Filed Jira bug ${issue.key} for "${summary}".`);
+      } else {
+        console.error(`[publish-testrail-results] Failed to file Jira bug for "${summary}" — see error above.`);
+      }
+    }
+  }
+}
+
 async function main(): Promise<void> {
-  const [reportJsonPath, suiteIdRaw, runName] = process.argv.slice(2);
-  if (!reportJsonPath || !suiteIdRaw || !runName) {
+  const [reportJsonPath, suiteIdRaw, runName, reportUrl] = process.argv.slice(2);
+  if (!reportJsonPath || !suiteIdRaw || !runName || !reportUrl) {
     console.error(
-      'Usage: publish-testrail-results.ts <report-json-path> <testrail-suite-id> <run-name>'
+      'Usage: publish-testrail-results.ts <report-json-path> <testrail-suite-id> <run-name> <report-url>'
     );
     process.exitCode = 1;
     return;
@@ -78,37 +207,44 @@ async function main(): Promise<void> {
         continue;
       }
 
-      // test.status is Playwright's post-retry outcome: 'expected' means it ended in the
-      // status the test declared upfront (normally "passed"); anything else is a failure
-      // to report (unexpected, flaky, skipped-when-not-expected, etc.).
-      results.push({ caseId, status: test.status === 'expected' ? 'passed' : 'failed' });
+      // 'flaky' (failed, then passed on retry) counts as a pass here: the suite ended up
+      // green, and Jira bug filing below is what's responsible for flagging stable failures.
+      results.push({ caseId, status: test.status !== 'unexpected' ? 'passed' : 'failed' });
     }
   }
 
   if (results.length === 0) {
     console.log('[publish-testrail-results] No TestRail-annotated tests found in the report — nothing to publish.');
-    return;
+  } else {
+    const client = new TestRailClient();
+    const projectId = Number(projectIdRaw);
+    const suiteId = Number(suiteIdRaw);
+
+    const run = await client.addRun(projectId, suiteId, runName, results.map((r) => r.caseId));
+    if (!run) {
+      console.error('[publish-testrail-results] Failed to create TestRail run — see error above.');
+      process.exitCode = 1;
+    } else {
+      const published = await client.addResultsForCases(run.id, results);
+      if (!published) {
+        console.error('[publish-testrail-results] Failed to publish results — see error above.');
+        process.exitCode = 1;
+      } else {
+        console.log(`[publish-testrail-results] Published ${results.length} result(s) to TestRail run #${run.id}.`);
+      }
+    }
   }
 
-  const client = new TestRailClient();
-  const projectId = Number(projectIdRaw);
-  const suiteId = Number(suiteIdRaw);
-
-  const run = await client.addRun(projectId, suiteId, runName, results.map((r) => r.caseId));
-  if (!run) {
-    console.error('[publish-testrail-results] Failed to create TestRail run — see error above.');
-    process.exitCode = 1;
-    return;
+  try {
+    const jobName = process.env.GITHUB_JOB || 'unknown-job';
+    const triggerType = mapTrigger(process.env.GITHUB_EVENT_NAME);
+    const runUrl = `${process.env.GITHUB_SERVER_URL}/${process.env.GITHUB_REPOSITORY}/actions/runs/${process.env.GITHUB_RUN_ID}`;
+    await fileJiraBugsForStableFailures(specs, jobName, runUrl, reportUrl, triggerType);
+  } catch (error) {
+    // Jira bug filing is best-effort on top of the TestRail publish above; a bug here
+    // shouldn't overwrite whatever exit code that already set.
+    console.error('[publish-testrail-results] Jira bug filing threw unexpectedly:', error instanceof Error ? error.message : error);
   }
-
-  const published = await client.addResultsForCases(run.id, results);
-  if (!published) {
-    console.error('[publish-testrail-results] Failed to publish results — see error above.');
-    process.exitCode = 1;
-    return;
-  }
-
-  console.log(`[publish-testrail-results] Published ${results.length} result(s) to TestRail run #${run.id}.`);
 }
 
 main();

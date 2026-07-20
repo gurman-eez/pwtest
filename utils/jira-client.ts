@@ -4,7 +4,13 @@ export interface JiraConfig {
   apiToken: string;
 }
 
-export type JiraIssueType = 'Bug' | 'Task';
+/**
+ * Exact issue type name as configured in the target project — not a fixed enum, since Jira
+ * projects can rename/localize their own types (this one's "Bug" type is literally named
+ * "Баг"). Verify via GET /rest/api/3/issue/createmeta?projectKeys=<key>&expand=projects.issuetypes
+ * rather than assuming "Bug" works everywhere.
+ */
+export type JiraIssueType = string;
 
 export interface CreateIssueParams {
   projectKey: string;
@@ -27,6 +33,75 @@ export interface JiraUser {
   displayName: string;
   emailAddress?: string;
   [key: string]: unknown;
+}
+
+export interface JiraSearchIssue {
+  key: string;
+  fields: {
+    summary: string;
+    status?: { name: string; statusCategory?: { key: string } };
+    labels?: string[];
+  };
+}
+
+/** ADF inline text node, optionally carrying a link mark. */
+interface AdfTextNode {
+  type: 'text';
+  text: string;
+  marks?: Array<{ type: string; attrs?: Record<string, unknown> }>;
+}
+
+type AdfBlockNode =
+  | { type: 'paragraph'; content: AdfTextNode[] }
+  | { type: 'codeBlock'; content: AdfTextNode[] };
+
+const URL_PATTERN = /https?:\/\/\S+/g;
+
+/** Splits a paragraph line into text nodes, turning any bare URL into a clickable ADF link mark. */
+function linkifyLine(line: string): AdfTextNode[] {
+  const nodes: AdfTextNode[] = [];
+  let lastIndex = 0;
+  for (const match of line.matchAll(URL_PATTERN)) {
+    const url = match[0];
+    const index = match.index ?? 0;
+    if (index > lastIndex) nodes.push({ type: 'text', text: line.slice(lastIndex, index) });
+    nodes.push({ type: 'text', text: url, marks: [{ type: 'link', attrs: { href: url } }] });
+    lastIndex = index + url.length;
+  }
+  if (lastIndex < line.length) nodes.push({ type: 'text', text: line.slice(lastIndex) });
+  return nodes;
+}
+
+/**
+ * Converts a lightweight text format into ADF blocks: plain lines become paragraphs (with any
+ * bare URL turned into a clickable link), and \`\`\`-fenced lines become a monospaced ADF
+ * codeBlock — used for raw Playwright error text, which reads as an unreadable run-on blob if
+ * pushed through the paragraph/link path instead.
+ */
+export function textToAdf(text: string): AdfBlockNode[] {
+  const lines = text.split('\n');
+  const content: AdfBlockNode[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.trim() === '```') {
+      const codeLines: string[] = [];
+      i++;
+      while (i < lines.length && lines[i].trim() !== '```') {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      i++; // skip closing fence (or end of input if unterminated)
+      content.push({
+        type: 'codeBlock',
+        content: codeLines.length ? [{ type: 'text', text: codeLines.join('\n') }] : [],
+      });
+      continue;
+    }
+    content.push({ type: 'paragraph', content: line ? linkifyLine(line) : [] });
+    i++;
+  }
+  return content;
 }
 
 /**
@@ -70,12 +145,7 @@ export class JiraClient {
         description: {
           type: 'doc',
           version: 1,
-          content: [
-            {
-              type: 'paragraph',
-              content: [{ type: 'text', text: params.description }],
-            },
-          ],
+          content: textToAdf(params.description),
         },
         issuetype: { name: params.type },
         labels,
@@ -88,6 +158,17 @@ export class JiraClient {
   /** GET /rest/api/3/myself — returns the authenticated user; used to sanity-check credentials. */
   async getCurrentUser(): Promise<JiraUser | null> {
     return this.request('GET', '/rest/api/3/myself');
+  }
+
+  /**
+   * GET /rest/api/3/search/jql — runs a JQL query (the pre-2025 /rest/api/3/search endpoint
+   * is retired, returns 410 Gone). Used to check for an existing open issue before filing a
+   * new one for the same failure.
+   */
+  async searchIssues(jql: string, maxResults = 50): Promise<JiraSearchIssue[] | null> {
+    const params = new URLSearchParams({ jql, maxResults: String(maxResults), fields: 'summary,status,labels' });
+    const data = await this.request<{ issues: JiraSearchIssue[] }>('GET', `/rest/api/3/search/jql?${params}`);
+    return data ? data.issues : null;
   }
 
   private async request<T>(method: string, path: string, body?: unknown): Promise<T | null> {
