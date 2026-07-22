@@ -6,7 +6,8 @@
     "test": "playwright test",
     "test:headed": "playwright test --headed",
     "test:report": "playwright show-report",
-    "verify:integrations": "node --experimental-strip-types scripts/verify-integrations.ts"
+    "verify:integrations": "node --experimental-strip-types scripts/verify-integrations.ts",
+    "eval:testcases": "node --experimental-strip-types scripts/eval-testcases.ts"
   },
   "keywords": [],
   "author": "",

@@ -150,6 +150,16 @@ export class TestRailClient {
     return this.request('GET', `/index.php?/api/v2/get_case/${caseId}`);
   }
 
+  /** GET /get_cases/{project_id}&suite_id={suite_id} — lists cases in a suite. */
+  async getCases(projectId: number, suiteId: number): Promise<TestRailCase[] | null> {
+    const data = await this.request<{ cases: TestRailCase[] } | TestRailCase[]>(
+      'GET',
+      `/index.php?/api/v2/get_cases/${projectId}&suite_id=${suiteId}`
+    );
+    if (!data) return null;
+    return Array.isArray(data) ? data : data.cases;
+  }
+
   /** POST /add_section/{project_id} — creates a section in a suite so cases have somewhere to live. */
   async addSection(
     projectId: number,
