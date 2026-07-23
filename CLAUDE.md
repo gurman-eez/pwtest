@@ -203,6 +203,15 @@ never show, or asserts a distinction the site can't make.
   assuming `tsc --noEmit` works cleanly on `main`. In the meantime, typecheck a specific file
   standalone: `tsc --noEmit --ignoreConfig <compiler flags matching tsconfig's intent>
   path/to/file.ts` (bypasses the broken `tsconfig.json` instead of fixing it out of scope).
+  Re-confirmed live 2026-07-23 via `./node_modules/.bin/tsc --noEmit` (still broken, same two
+  errors) — `add-coverage/contact-us` still hasn't landed as of this writing.
+- **The `rtk` bash-rewriting hook can silently mask a failing command's real output.**
+  Confirmed 2026-07-23: `npx tsc --noEmit` run through the hook printed a filtered
+  `"TypeScript compilation completed"` summary — reading as a clean pass — while the actual
+  compiler, run directly (`./node_modules/.bin/tsc --noEmit`, or `rtk proxy npx tsc --noEmit`),
+  exits `1` with the exact `moduleResolution=node10`/`baseUrl` errors from the bullet above.
+  Don't trust an rtk-filtered summary as proof of a real exit code, especially for a command
+  already documented here as broken — rerun it through the unfiltered path first.
 - **Scripts run via `node --experimental-strip-types scripts/*.ts`** directly — no build step,
   no `ts-node`/`tsx` dependency. This prints a Node `ExperimentalWarning` and a
   `MODULE_TYPELESS_PACKAGE_JSON` warning on every invocation (package.json has no `"type"`
