@@ -107,8 +107,13 @@ never show, or asserts a distinction the site can't make.
   `JiraClient.textToAdf()` renders bug descriptions as real ADF (bare URLs become link marks,
   ` ``` `-fenced text becomes a monospaced `codeBlock`).
 - **`scripts/`** — `publish-testrail-results.ts` (CI reporting, see below),
-  `verify-integrations.ts` (connectivity smoke check), `eval-testcases.ts` (LLM-judge case
-  quality, PR #9).
+  `verify-integrations.ts` (connectivity smoke check), `eval-testcases.ts` (LLM-judge TestRail
+  case-quality scoring, `--calibrate` mode against a known-verdict dataset — see
+  `.claude/commands/eval-calibrate.md`), `classify-failure.ts` (LLM-judge failure
+  classification from a screenshot — `visual_regression` / `unexpected_content` /
+  `logic_error` / `infrastructure_issue` — called by `publish-testrail-results.ts` right before
+  filing a Jira bug for a stable failure; exported `classifyFailure()` never throws, so a
+  classification failure never blocks filing the bug itself).
 
 ## Locators
 
@@ -179,7 +184,15 @@ never show, or asserts a distinction the site can't make.
     read — files a Jira bug for every **stably**-failing test (see "Test rules" above).
     Dedup: searches Jira (`/rest/api/3/search/jql` — the older `/rest/api/3/search` is retired,
     410 Gone) for an existing open issue with the same TestRail-`refs` label (or summary text
-    if no label) created in the last 7 days before filing a new one.
+    if no label) created in the last 7 days before filing a new one. Right after the dedup
+    check and before `createIssue`, `scripts/classify-failure.ts` classifies the failure from
+    its screenshot (if one was captured and `ANTHROPIC_API_KEY` is set) and the result is
+    appended to the bug description as an "AI classification" block — best-effort, never
+    blocks filing the bug. Every classification is also written to
+    `test-results/failure-classifications.json`, which is why **"Report to Slack" now runs
+    after "Publish to TestRail / file Jira bugs"** in every job (previously the other way
+    round) — that file needs to exist before `report-to-slack` can append a short "🔍 likely:
+    `<category>`" badge to each failed title in its Slack message.
   - `api-tests`' TestRail/Jira step exists in the workflow but is `if: false`
     (`TODO(testrail-api-coverage)`) — `tests/api/*.spec.ts` don't carry TestRail annotations
     yet, so enabling it now would just create empty TestRail runs.
@@ -187,7 +200,8 @@ never show, or asserts a distinction the site can't make.
   literally named `"Баг"` (`JiraIssueType = string`, verify via `GET
   /rest/api/3/issue/createmeta` rather than assuming `"Bug"` works).
 - **Required secrets**: `TESTRAIL_URL`, `TESTRAIL_EMAIL`, `TESTRAIL_API_KEY`, `JIRA_URL`,
-  `JIRA_EMAIL`, `JIRA_API_TOKEN`, `SLACK_WEBHOOK_URL`.
+  `JIRA_EMAIL`, `JIRA_API_TOKEN`, `SLACK_WEBHOOK_URL`, `ANTHROPIC_API_KEY` (optional — AI
+  failure classification is skipped, not fatal, if unset).
   **Required vars**: `TESTRAIL_PROJECT_ID`, `TESTRAIL_SUITE_LOGIN_ID`,
   `TESTRAIL_SUITE_PAYMENT_ID`, `JIRA_PROJECT_KEY`, `JIRA_BUG_TYPE` (plus the still-unset
   `TESTRAIL_SUITE_API_ID` referenced by the disabled `api-tests` reporting step).

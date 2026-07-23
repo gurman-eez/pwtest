@@ -18,10 +18,20 @@
  * JIRA_PROJECT_KEY — if JIRA_PROJECT_KEY is unset, that stage is skipped entirely
  * (TestRail publishing above still runs), which is how the api-tests job opts out
  * for now (same TODO as its disabled TestRail step: no annotations there yet).
+ *
+ * Before each new Jira bug is filed (after the dedup check, so a duplicate never spends the
+ * call), scripts/classify-failure.ts classifies the failure from its screenshot — if the
+ * Playwright report captured one and ANTHROPIC_API_KEY is set — and the result is appended to
+ * the bug's description as an "AI classification" block. It's a pure best-effort enrichment:
+ * classifyFailure() never throws, so a classification failure never blocks filing the bug
+ * itself. Every classification is also written to CLASSIFICATIONS_OUTPUT_PATH below for
+ * .github/actions/report-to-slack to pick up (see e2e.yml step order: this action now runs
+ * before report-to-slack specifically so that file exists in time).
  */
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { TestRailClient, type TestRailResultStatus } from '../utils/testrail-client.ts';
 import { JiraClient } from '../utils/jira-client.ts';
+import { classifyFailure } from './classify-failure.ts';
 
 interface PWReportAnnotation {
   type: string;
@@ -32,9 +42,16 @@ interface PWReportError {
   message?: string;
 }
 
+interface PWReportAttachment {
+  name: string;
+  contentType: string;
+  path?: string;
+}
+
 interface PWReportResult {
   status: string;
   errors?: PWReportError[];
+  attachments?: PWReportAttachment[];
 }
 
 interface PWReportTest {
@@ -77,6 +94,13 @@ function lastErrorMessage(test: PWReportTest): string {
   return cleaned.length > 2000 ? `${cleaned.slice(0, 2000)}\n... (truncated)` : cleaned;
 }
 
+/** The failure screenshot path (screenshot: 'only-on-failure' in playwright.config.ts), if one was captured. */
+function lastScreenshotPath(test: PWReportTest): string | null {
+  const lastResult = test.results[test.results.length - 1];
+  const screenshot = lastResult?.attachments?.find((a) => a.name === 'screenshot' && a.contentType === 'image/png');
+  return screenshot?.path ?? null;
+}
+
 function mapTrigger(eventName: string | undefined): string {
   if (eventName === 'schedule') return 'schedule';
   if (eventName === 'pull_request') return 'PR';
@@ -87,6 +111,9 @@ function mapTrigger(eventName: string | undefined): string {
 function jqlQuote(value: string): string {
   return `"${value.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
+
+/** Side-channel output for .github/actions/report-to-slack — see its own comment on why this exists. */
+const CLASSIFICATIONS_OUTPUT_PATH = 'test-results/failure-classifications.json';
 
 async function fileJiraBugsForStableFailures(
   specs: PWReportSpec[],
@@ -113,6 +140,8 @@ async function fileJiraBugsForStableFailures(
       ? new TestRailClient({ baseUrl: testrailUrl, email: testrailEmail, apiKey: testrailApiKey })
       : null;
 
+  const classifications: Record<string, { category: string; confidence: string }> = {};
+
   for (const spec of specs) {
     for (const test of spec.tests) {
       if (test.status !== 'unexpected') continue; // flaky/expected/skipped — not a stable failure
@@ -127,20 +156,9 @@ async function fileJiraBugsForStableFailures(
       }
 
       const summary = `[${jobName}] ${spec.title} — failing`;
-      const description = [
-        `Trigger: ${triggerType}`,
-        `CI run: ${runUrl}`,
-        `HTML report: ${reportUrl}`,
-        caseId !== null ? `TestRail case: C${caseId}${label ? ` (${label})` : ''}` : null,
-        '',
-        'Last error:',
-        '```',
-        lastErrorMessage(test),
-        '```',
-      ]
-        .filter((line) => line !== null)
-        .join('\n');
 
+      // Dedup check first — no point spending an image-classification call on a failure that's
+      // already got an open Jira issue from an earlier run.
       const dedupJql = label
         ? `project = ${jqlQuote(projectKey)} AND labels = ${jqlQuote(label)} AND created >= -${dedupDays}d AND statusCategory != Done`
         : `project = ${jqlQuote(projectKey)} AND summary ~ ${jqlQuote(summary)} AND created >= -${dedupDays}d AND statusCategory != Done`;
@@ -157,6 +175,41 @@ async function fileJiraBugsForStableFailures(
         continue;
       }
 
+      const screenshotPath = lastScreenshotPath(test);
+      const classification = screenshotPath
+        ? await classifyFailure({ testName: spec.title, errorMessage: lastErrorMessage(test), screenshotPath })
+        : null;
+      if (!screenshotPath) {
+        console.log(`[publish-testrail-results] No failure screenshot for "${spec.title}" — filing without AI classification.`);
+      }
+      if (classification) {
+        classifications[spec.title] = { category: classification.category, confidence: classification.confidence };
+      }
+
+      const description = [
+        `Trigger: ${triggerType}`,
+        `CI run: ${runUrl}`,
+        `HTML report: ${reportUrl}`,
+        caseId !== null ? `TestRail case: C${caseId}${label ? ` (${label})` : ''}` : null,
+        '',
+        'Last error:',
+        '```',
+        lastErrorMessage(test),
+        '```',
+        classification
+          ? [
+              '',
+              'AI classification:',
+              `- Category: ${classification.category}`,
+              `- Confidence: ${classification.confidence}`,
+              `- Suggested action: ${classification.suggested_action}`,
+              `- Reasoning: ${classification.reasoning}`,
+            ].join('\n')
+          : null,
+      ]
+        .filter((line) => line !== null)
+        .join('\n');
+
       const issue = await jira.createIssue({
         projectKey,
         type: bugType,
@@ -171,6 +224,16 @@ async function fileJiraBugsForStableFailures(
         console.error(`[publish-testrail-results] Failed to file Jira bug for "${summary}" — see error above.`);
       }
     }
+  }
+
+  // Read by .github/actions/report-to-slack's parsing step (if present) to append a short
+  // "🔍 likely: <category>" badge next to each failed test title — written even when empty so
+  // that step can tell "no classifications" from "this step never ran" via file presence alone.
+  try {
+    writeFileSync(CLASSIFICATIONS_OUTPUT_PATH, JSON.stringify(classifications, null, 2));
+    console.log(`[publish-testrail-results] Wrote ${Object.keys(classifications).length} classification(s) to ${CLASSIFICATIONS_OUTPUT_PATH}.`);
+  } catch (error) {
+    console.error(`[publish-testrail-results] Failed to write ${CLASSIFICATIONS_OUTPUT_PATH}:`, error instanceof Error ? error.message : error);
   }
 }
 

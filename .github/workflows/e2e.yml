@@ -25,6 +25,11 @@ jobs:
       JIRA_URL: ${{ secrets.JIRA_URL }}
       JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
       JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+      # Read by scripts/classify-failure.ts (called from publish-testrail-results.ts, right
+      # before a Jira bug is filed for a stable failure). Optional in practice — classifyFailure()
+      # skips itself and logs if this is unset, same as a missing screenshot; a bug still gets
+      # filed either way, just without the AI classification block.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -66,17 +71,6 @@ jobs:
           run-id: ${{ github.run_id }}
           retention: '20'
 
-      - name: Report to Slack
-        if: always()
-        uses: ./.github/actions/report-to-slack
-        with:
-          job-status: ${{ job.status }}
-          test-summary-path: playwright-output.log
-          label: login-signup
-          trigger-type: ${{ github.event_name }}
-          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
-          report-url: https://gurman-eez.github.io/pwtest/runs/login-signup/${{ github.run_id }}/
-
       - name: Publish to TestRail / file Jira bugs
         if: always()
         uses: ./.github/actions/publish-to-testrail
@@ -87,6 +81,21 @@ jobs:
           report-url: https://gurman-eez.github.io/pwtest/runs/login-signup/${{ github.run_id }}/
           jira-project-key: ${{ vars.JIRA_PROJECT_KEY }}
           jira-bug-type: ${{ vars.JIRA_BUG_TYPE }}
+
+      # Runs after "Publish to TestRail / file Jira bugs" (not before, as in a simpler pipeline)
+      # specifically so test-results/failure-classifications.json — written by that step — is
+      # already on disk when this one parses failures, letting it append a short
+      # "🔍 likely: <category>" badge per failed title (see report-to-slack/action.yml).
+      - name: Report to Slack
+        if: always()
+        uses: ./.github/actions/report-to-slack
+        with:
+          job-status: ${{ job.status }}
+          test-summary-path: playwright-output.log
+          label: login-signup
+          trigger-type: ${{ github.event_name }}
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          report-url: https://gurman-eez.github.io/pwtest/runs/login-signup/${{ github.run_id }}/
 
       - name: Upload Playwright report
         if: always()
@@ -108,6 +117,11 @@ jobs:
       JIRA_URL: ${{ secrets.JIRA_URL }}
       JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
       JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+      # Read by scripts/classify-failure.ts (called from publish-testrail-results.ts, right
+      # before a Jira bug is filed for a stable failure). Optional in practice — classifyFailure()
+      # skips itself and logs if this is unset, same as a missing screenshot; a bug still gets
+      # filed either way, just without the AI classification block.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -141,17 +155,6 @@ jobs:
           run-id: ${{ github.run_id }}
           retention: '20'
 
-      - name: Report to Slack
-        if: always()
-        uses: ./.github/actions/report-to-slack
-        with:
-          job-status: ${{ job.status }}
-          test-summary-path: playwright-output.log
-          label: checkout
-          trigger-type: ${{ github.event_name }}
-          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
-          report-url: https://gurman-eez.github.io/pwtest/runs/checkout/${{ github.run_id }}/
-
       - name: Publish to TestRail / file Jira bugs
         if: always()
         uses: ./.github/actions/publish-to-testrail
@@ -162,6 +165,19 @@ jobs:
           report-url: https://gurman-eez.github.io/pwtest/runs/checkout/${{ github.run_id }}/
           jira-project-key: ${{ vars.JIRA_PROJECT_KEY }}
           jira-bug-type: ${{ vars.JIRA_BUG_TYPE }}
+
+      # See the matching comment in the login-signup job: runs after the TestRail/Jira step on
+      # purpose, so failure-classifications.json exists in time for the Slack badge below.
+      - name: Report to Slack
+        if: always()
+        uses: ./.github/actions/report-to-slack
+        with:
+          job-status: ${{ job.status }}
+          test-summary-path: playwright-output.log
+          label: checkout
+          trigger-type: ${{ github.event_name }}
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          report-url: https://gurman-eez.github.io/pwtest/runs/checkout/${{ github.run_id }}/
 
       - name: Upload Playwright report
         if: always()
@@ -182,6 +198,11 @@ jobs:
       JIRA_URL: ${{ secrets.JIRA_URL }}
       JIRA_EMAIL: ${{ secrets.JIRA_EMAIL }}
       JIRA_API_TOKEN: ${{ secrets.JIRA_API_TOKEN }}
+      # Read by scripts/classify-failure.ts (called from publish-testrail-results.ts, right
+      # before a Jira bug is filed for a stable failure). Optional in practice — classifyFailure()
+      # skips itself and logs if this is unset, same as a missing screenshot; a bug still gets
+      # filed either way, just without the AI classification block.
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -218,24 +239,14 @@ jobs:
           run-id: ${{ github.run_id }}
           retention: '20'
 
-      - name: Report to Slack
-        if: always()
-        uses: ./.github/actions/report-to-slack
-        with:
-          job-status: ${{ job.status }}
-          test-summary-path: playwright-output.log
-          label: API tests
-          trigger-type: ${{ github.event_name }}
-          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
-          report-url: https://gurman-eez.github.io/pwtest/runs/api-tests/${{ github.run_id }}/
-
       # TODO(testrail-api-coverage): enable once tests/api/*.spec.ts carry TestRail case-id
       # annotations (`{ type: 'testrail', description: 'C<id>' }`, same pattern as
       # tests/login-signup.spec.ts / tests/checkout.spec.ts) and a TestRail suite/section
       # exists for the API contract tests. Wired up now (same composite action as the other
       # two jobs, including the Jira stable-failure bug filing added alongside it) but
       # disabled — with no annotated tests, this would just create empty TestRail runs, and
-      # there's no TestRail case/refs to label a Jira bug with either.
+      # there's no TestRail case/refs to label a Jira bug with either. Kept before "Report to
+      # Slack" for structural symmetry with the other two jobs even though it's a no-op here.
       - name: Publish to TestRail / file Jira bugs
         if: false
         uses: ./.github/actions/publish-to-testrail
@@ -246,6 +257,17 @@ jobs:
           report-url: https://gurman-eez.github.io/pwtest/runs/api-tests/${{ github.run_id }}/
           jira-project-key: ${{ vars.JIRA_PROJECT_KEY }}
           jira-bug-type: ${{ vars.JIRA_BUG_TYPE }}
+
+      - name: Report to Slack
+        if: always()
+        uses: ./.github/actions/report-to-slack
+        with:
+          job-status: ${{ job.status }}
+          test-summary-path: playwright-output.log
+          label: API tests
+          trigger-type: ${{ github.event_name }}
+          webhook-url: ${{ secrets.SLACK_WEBHOOK_URL }}
+          report-url: https://gurman-eez.github.io/pwtest/runs/api-tests/${{ github.run_id }}/
 
       - name: Upload Playwright report
         if: always()
