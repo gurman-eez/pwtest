@@ -3,7 +3,11 @@ description: >-
   Parses a captured `playwright test` list-reporter log and posts a pass/fail
   summary to Slack (verbose with failed test titles on failure). Shared by
   every job that runs a Playwright suite in CI. Artifact upload is a separate
-  step in the caller — this action only handles the Slack message.
+  step in the caller — this action only handles the Slack message. If
+  test-results/failure-classifications.json exists (written by
+  scripts/publish-testrail-results.ts, via scripts/classify-failure.ts — see
+  that action's step, which the caller runs before this one), each failed
+  title gets a short "🔍 likely: <category>" badge appended, best-effort.
 
 inputs:
   job-status:
@@ -54,6 +58,34 @@ runs:
         # The list reporter prints failed test titles as an indented block right after the
         # "N failed" summary line and right before the final "N passed (Xs)" line.
         FAILED_TITLES=$(awk '/^[[:space:]]*[0-9]+ failed[[:space:]]*$/{flag=1; next} /^[[:space:]]*[0-9]+ passed/{flag=0} flag && NF {sub(/^[[:space:]]+/, ""); print}' "$LOG_FILE")
+
+        # Each list-reporter line ends with the bare test title (JSON report's spec.title,
+        # what scripts/publish-testrail-results.ts keys failure-classifications.json by) after
+        # a "[project] › file:line › Describe block › " prefix — matched here by suffix rather
+        # than requiring an exact line match. Best-effort: a missing file, an unmatched title,
+        # or a null category all just fall through with no badge added.
+        CLASSIFICATIONS_FILE="test-results/failure-classifications.json"
+        if [ -s "$CLASSIFICATIONS_FILE" ] && [ -n "$FAILED_TITLES" ]; then
+          ANNOTATED_TITLES=""
+          while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            BADGE=""
+            while IFS= read -r key; do
+              case "$line" in
+                *"$key")
+                  BADGE=$(jq -r --arg k "$key" '.[$k].category // empty' "$CLASSIFICATIONS_FILE")
+                  break
+                  ;;
+              esac
+            done < <(jq -r 'keys[]' "$CLASSIFICATIONS_FILE")
+            if [ -n "$BADGE" ]; then
+              ANNOTATED_TITLES="${ANNOTATED_TITLES}${line}  🔍 likely: ${BADGE}"$'\n'
+            else
+              ANNOTATED_TITLES="${ANNOTATED_TITLES}${line}"$'\n'
+            fi
+          done <<< "$FAILED_TITLES"
+          FAILED_TITLES="${ANNOTATED_TITLES%$'\n'}"
+        fi
 
         case "${{ inputs.trigger-type }}" in
           schedule) TRIGGER="schedule" ;;
