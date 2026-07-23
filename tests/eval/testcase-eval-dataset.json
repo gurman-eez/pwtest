@@ -1,0 +1,196 @@
+[
+  {
+    "caseId": "C46",
+    "title": "Successful registration of a new user via signup form",
+    "priority": "High",
+    "type": "Functional",
+    "refs": "LOGIN-01-REGISTER-SUCCESS",
+    "preconditions": "Test Type: Positive.\nUser does not already have an account on automationexercise.com.\nBrowser is at https://automationexercise.com/login.",
+    "steps": [
+      {
+        "content": "Navigate to /login",
+        "expected": "Login page is displayed with the 'New User Signup!' panel visible."
+      },
+      {
+        "content": "Enter a unique Name and Email Address in the signup mini-form and click 'Signup'",
+        "expected": "Page navigates to /signup and displays the 'Enter Account Information' form."
+      },
+      {
+        "content": "Fill in the required account information (title, password, DOB, name, address, etc.) and click 'Create Account'",
+        "expected": "'Account Created!' confirmation heading is displayed."
+      },
+      {
+        "content": "Click 'Continue'",
+        "expected": "User is redirected to the home page (/) and is automatically logged in — navbar shows 'Logged in as {Name}'."
+      }
+    ],
+    "siblingTitles": [
+      "Registration with an already-used email is rejected",
+      "Successful login with valid credentials",
+      "Login with an existing email but wrong password is rejected",
+      "Logout returns the navbar to guest state"
+    ],
+    "expected_verdict": "pass",
+    "source": "testrail:C46 (suite 6, live)"
+  },
+  {
+    "caseId": "C47",
+    "title": "Registration with an already-used email is rejected",
+    "priority": "High",
+    "type": "Functional",
+    "refs": "LOGIN-02-DUPLICATE-EMAIL",
+    "preconditions": "Test Type: Negative.\nPrecondition: an account with a known email address already exists (e.g. provisioned via API createAccount).",
+    "steps": [
+      {
+        "content": "Navigate to /login",
+        "expected": "Login page is displayed."
+      },
+      {
+        "content": "Enter a new Name and the EXISTING account's email in the signup mini-form, click 'Signup'",
+        "expected": "Inline error 'Email Address already exist!' is shown."
+      },
+      {
+        "content": "Observe the resulting URL",
+        "expected": "URL becomes /signup, NOT /login — known site behavior: the mini-signup form re-renders the same template at /signup on this error path instead of staying on /login."
+      }
+    ],
+    "siblingTitles": [
+      "Successful registration of a new user via signup form",
+      "Successful login with valid credentials",
+      "Login with an existing email but wrong password is rejected",
+      "Logout returns the navbar to guest state"
+    ],
+    "expected_verdict": "pass",
+    "source": "testrail:C47 (suite 6, live)"
+  },
+  {
+    "caseId": "C50",
+    "title": "Logout returns the navbar to guest state",
+    "priority": "Medium",
+    "type": "Functional",
+    "refs": "LOGIN-05-LOGOUT",
+    "preconditions": "Test Type: Positive.\nPrecondition: user is logged in with a valid account.",
+    "steps": [
+      {
+        "content": "Login with a valid account",
+        "expected": "Navbar shows 'Logged in as {Name}'."
+      },
+      {
+        "content": "Click 'Logout'",
+        "expected": "User is redirected to /login; 'Login' button is visible again; 'Logged in as' text is no longer present."
+      }
+    ],
+    "siblingTitles": [
+      "Successful registration of a new user via signup form",
+      "Registration with an already-used email is rejected",
+      "Successful login with valid credentials",
+      "Login with an existing email but wrong password is rejected"
+    ],
+    "expected_verdict": "pass",
+    "source": "testrail:C50 (suite 6, live)"
+  },
+  {
+    "caseId": "C51",
+    "title": "Logged-in user completes checkout end-to-end (Order Placed)",
+    "priority": "High",
+    "type": "Functional",
+    "refs": "PAYMENT-01-CHECKOUT-E2E",
+    "preconditions": "Test Type: Positive.\nKnown limitation: this environment has no payment sandbox — any card number is accepted with no Luhn/format validation. Do NOT create a \"system rejects invalid card number\" case against it; it will never fail.\nPrecondition: user has a valid account and is logged in.",
+    "steps": [
+      {
+        "content": "Login with a valid account",
+        "expected": "Navbar shows 'Logged in as {Name}'."
+      },
+      {
+        "content": "Open a product's detail page and click 'Add to cart', then 'View Cart' in the confirmation modal",
+        "expected": "Cart modal shows 'Your product has been added to cart.'; page navigates to /view_cart."
+      },
+      {
+        "content": "Click 'Proceed To Checkout'",
+        "expected": "Page navigates to /checkout showing the order review and address summary."
+      },
+      {
+        "content": "Click 'Place Order'",
+        "expected": "Page navigates to /payment (card details form)."
+      },
+      {
+        "content": "Fill in Name on Card, Card Number, CVC, Expiry Month/Year (any values are accepted — known limitation: no Luhn check on this environment) and submit payment",
+        "expected": "Page navigates to /payment_done/<order_id>; 'Order Placed!' heading is shown; 'Download Invoice' link is visible."
+      }
+    ],
+    "siblingTitles": [],
+    "expected_verdict": "pass",
+    "source": "testrail:C51 (suite 7, live)"
+  },
+  {
+    "caseId": "CAL-05",
+    "title": "Payment rejects an invalid or malformed card number",
+    "priority": "High",
+    "type": "Functional",
+    "refs": "PAYMENT-02-INVALID-CARD",
+    "preconditions": "Test Type: Negative.\nPrecondition: user has reached the /payment step with a valid cart.",
+    "steps": [
+      {
+        "content": "Enter a malformed card number (e.g. \"abcd1234\") in the Card Number field and click the pay button",
+        "expected": "An inline validation error is shown and the payment is rejected."
+      }
+    ],
+    "siblingTitles": [],
+    "expected_verdict": "needs_revision",
+    "source": "synthetic — violates known constraint #1 (payment.page.ts: no Luhn/format check, always accepted)"
+  },
+  {
+    "caseId": "CAL-06",
+    "title": "Login with a non-existent email shows a different error than a wrong password",
+    "priority": "Medium",
+    "type": "Functional",
+    "refs": "LOGIN-06-DISTINCT-ERRORS",
+    "preconditions": "Test Type: Negative.\nPrecondition: no account exists for the email used in step 1, and a separate valid account exists for step 2.",
+    "steps": [
+      {
+        "content": "Attempt login with an email that was never registered",
+        "expected": "Error message specifically says no account exists for this email."
+      },
+      {
+        "content": "Attempt login with a registered email and a wrong password",
+        "expected": "Error message specifically says the password is incorrect (different text than the unknown-email case)."
+      }
+    ],
+    "siblingTitles": [],
+    "expected_verdict": "needs_revision",
+    "source": "synthetic — violates known constraint #2 (identical message/response for both cases on the real site)"
+  },
+  {
+    "caseId": "CAL-07",
+    "title": "Checkout process works correctly",
+    "priority": "Medium",
+    "type": "Functional",
+    "refs": "PAYMENT-03-GENERAL-CHECK",
+    "preconditions": "User is logged in.",
+    "steps": [
+      {
+        "content": "Go through the checkout process",
+        "expected": "Everything works as expected."
+      },
+      {
+        "content": "Complete the payment",
+        "expected": "Order is placed successfully."
+      }
+    ],
+    "siblingTitles": [],
+    "expected_verdict": "needs_revision",
+    "source": "synthetic — passes the code grader's non-empty checks but is not clarity-checkable: no concrete text/URL/state to assert"
+  },
+  {
+    "caseId": "CAL-08",
+    "title": "Add to cart button works",
+    "priority": "P1",
+    "type": "Functional",
+    "refs": "addcart",
+    "preconditions": "",
+    "steps": [],
+    "siblingTitles": [],
+    "expected_verdict": "needs_revision",
+    "source": "synthetic — deliberately fails every code-grader check: empty preconditions, invalid priority enum, refs doesn't match <SECTION>-NN-<SLUG>, empty steps array"
+  }
+]

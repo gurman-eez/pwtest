@@ -1,5 +1,6 @@
 /**
- * Evaluates TestRail test-case quality using Claude (Haiku) as an LLM judge.
+ * Evaluates TestRail test-case quality with a deterministic code grader plus Claude (Haiku)
+ * as an LLM judge, combined into a single weighted score (code_score * 0.3 + model_score * 0.7).
  *
  * Talks directly to the Anthropic Messages API (fetch to api.anthropic.com/v1/messages) —
  * no Claude Code SDK/CLI involved. Requires ANTHROPIC_API_KEY in env.
@@ -7,12 +8,19 @@
  * Usage:
  *   node --experimental-strip-types scripts/eval-testcases.ts --suite <id>[,<id>...] [--project <id>] [--verbose]
  *   node --experimental-strip-types scripts/eval-testcases.ts --file <path-to-cases.json> [--verbose]
+ *   node --experimental-strip-types scripts/eval-testcases.ts --calibrate [--verbose]
  *
  * Suite mode additionally requires TESTRAIL_URL, TESTRAIL_EMAIL, TESTRAIL_API_KEY in env,
  * and TESTRAIL_PROJECT_ID unless --project is passed.
  *
  * File mode expects a JSON array of objects shaped like RawFileCase below — useful for
  * evaluating cases that aren't (yet) in TestRail.
+ *
+ * --calibrate ignores --suite/--file and runs against the fixed calibration dataset at
+ * tests/eval/testcase-eval-dataset.json, comparing each case's final_verdict against its
+ * known expected_verdict and printing per-case matches plus overall accuracy. Use this to
+ * check a rubric-prompt change didn't regress known-good/known-bad judgments before trusting
+ * it on real TestRail cases — see .claude/commands/eval-calibrate.md.
  *
  * --verbose prints full strengths/weaknesses/reasoning/scores for every case, not only the
  * ones flagged needs_revision — meant for sanity-checking the rubric itself, not routine use.
@@ -45,11 +53,14 @@ interface EvalCase {
   title: string;
   priority: string;
   type: string;
+  refs: string;
   preconditions: string;
   steps: EvalStepDetail[];
   flatStepsText?: string;
   flatExpectedText?: string;
   siblingTitles: string[];
+  /** Only set in --calibrate mode: the known-correct verdict this case's dataset entry asserts. */
+  expectedVerdict?: 'pass' | 'needs_revision';
 }
 
 interface Evaluation {
@@ -66,8 +77,14 @@ interface Evaluation {
   verdict: 'pass' | 'needs_revision';
 }
 
+interface CodeGrade {
+  checks: Array<{ name: string; pass: boolean; detail?: string }>;
+  /** (passed checks / total checks) * 5 — same 1-5 scale as the model's rubric dimensions. */
+  score: number;
+}
+
 type CaseResult =
-  | { evalCase: EvalCase; status: 'ok'; evaluation: Evaluation }
+  | { evalCase: EvalCase; status: 'ok'; evaluation: Evaluation; codeGrade: CodeGrade; modelScore: number; finalScore: number; finalVerdict: 'pass' | 'needs_revision' }
   | { evalCase: EvalCase; status: 'error'; error: string };
 
 const SUBMIT_EVALUATION_TOOL = {
@@ -252,6 +269,64 @@ function validateEvaluation(input: unknown): Evaluation {
   return candidate as unknown as Evaluation;
 }
 
+/** <SECTION>-NN-<SLUG>, e.g. "LOGIN-01-REGISTER-SUCCESS" or "PAYMENT-01-CHECKOUT-E2E" (see live cases C46-C51). */
+const REFS_PATTERN = /^[A-Z]+-\d{2}-[A-Z0-9]+(?:-[A-Z0-9]+)*$/;
+const VALID_PRIORITIES = new Set(['High', 'Medium', 'Low']);
+const REQUIRED_STRING_FIELDS: Array<keyof Pick<EvalCase, 'title' | 'priority' | 'type' | 'refs' | 'preconditions'>> =
+  ['title', 'priority', 'type', 'refs', 'preconditions'];
+
+const CODE_SCORE_WEIGHT = 0.3;
+const MODEL_SCORE_WEIGHT = 0.7;
+/** final_score >= this is "pass" — chosen to reproduce the model's own verdicts on the C46-C50
+ * baseline (avg rubric score 4.0 was exactly the cut point between its pass and needs_revision
+ * calls there); tune this if --calibrate accuracy says otherwise. */
+const PASS_THRESHOLD = 4;
+
+/**
+ * Deterministic checks that don't need an API call: every required field is present and
+ * non-empty, refs matches the section/number/slug convention, priority is one of the three
+ * levels this project uses, and there's at least one step. Catches malformed cases the model
+ * grader would otherwise have to spend a rubric dimension noticing.
+ */
+function gradeCaseWithCode(evalCase: EvalCase): CodeGrade {
+  const missingFields = REQUIRED_STRING_FIELDS.filter((field) => !evalCase[field]?.trim());
+  const checks: CodeGrade['checks'] = [
+    {
+      name: 'required_fields_present',
+      pass: missingFields.length === 0,
+      detail: missingFields.length > 0 ? `missing/empty: ${missingFields.join(', ')}` : undefined,
+    },
+    {
+      name: 'refs_pattern',
+      pass: REFS_PATTERN.test(evalCase.refs ?? ''),
+      detail: `expected <SECTION>-NN-<SLUG>, got "${evalCase.refs}"`,
+    },
+    {
+      name: 'priority_valid',
+      pass: VALID_PRIORITIES.has(evalCase.priority),
+      detail: `expected one of High/Medium/Low, got "${evalCase.priority}"`,
+    },
+    {
+      name: 'steps_nonempty',
+      pass: evalCase.steps.length > 0,
+      detail: evalCase.steps.length === 0 ? 'steps array is empty' : undefined,
+    },
+  ];
+  // Passing checks don't need a detail explaining why they failed.
+  for (const check of checks) if (check.pass) check.detail = undefined;
+
+  const passedCount = checks.filter((c) => c.pass).length;
+  return { checks, score: (passedCount / checks.length) * 5 };
+}
+
+function averageModelScore(scores: Evaluation['scores']): number {
+  return (scores.traceability + scores.constraint_awareness + scores.clarity + scores.coverage_balance) / 4;
+}
+
+function computeFinalScore(codeGrade: CodeGrade, evaluation: Evaluation): number {
+  return codeGrade.score * CODE_SCORE_WEIGHT + averageModelScore(evaluation.scores) * MODEL_SCORE_WEIGHT;
+}
+
 function caseFromTestRail(
   tc: TestRailCase,
   typesById: Map<number, string>,
@@ -266,6 +341,7 @@ function caseFromTestRail(
     title: tc.title,
     priority: prioritiesById.get(tc.priority_id as number) ?? String(tc.priority_id),
     type: typesById.get(tc.type_id as number) ?? String(tc.type_id),
+    refs: tc.refs ?? '',
     preconditions: (tc.custom_preconds as string | null) || '(none documented)',
     steps: stepsSeparated.map((s) => ({ content: s.content ?? '', expected: s.expected ?? '' })),
     flatStepsText: (tc.custom_steps as string | null) ?? undefined,
@@ -305,6 +381,7 @@ interface RawFileCase {
   title: string;
   priority: string;
   type: string;
+  refs?: string;
   preconditions?: string;
   steps?: EvalStepDetail[];
   flatStepsText?: string;
@@ -312,30 +389,49 @@ interface RawFileCase {
   siblingTitles?: string[];
 }
 
-function loadCasesFromFile(path: string): EvalCase[] {
-  const raw = JSON.parse(readFileSync(path, 'utf-8')) as RawFileCase[];
-  return raw.map((c) => ({
+function fileCaseToEvalCase(c: RawFileCase): EvalCase {
+  return {
     caseId: c.caseId,
     title: c.title,
     priority: c.priority,
     type: c.type,
+    refs: c.refs ?? '',
     preconditions: c.preconditions ?? '(none documented)',
     steps: c.steps ?? [],
     flatStepsText: c.flatStepsText,
     flatExpectedText: c.flatExpectedText,
     siblingTitles: c.siblingTitles ?? [],
-  }));
+  };
+}
+
+function loadCasesFromFile(path: string): EvalCase[] {
+  const raw = JSON.parse(readFileSync(path, 'utf-8')) as RawFileCase[];
+  return raw.map(fileCaseToEvalCase);
+}
+
+const CALIBRATION_DATASET_PATH = 'tests/eval/testcase-eval-dataset.json';
+
+interface CalibrationRawCase extends RawFileCase {
+  /** Known-correct verdict for this case, set by hand when the dataset was built — see
+   * .claude/commands/eval-calibrate.md for how/when to refresh this file. */
+  expected_verdict: 'pass' | 'needs_revision';
+}
+
+function loadCalibrationDataset(path: string = CALIBRATION_DATASET_PATH): EvalCase[] {
+  const raw = JSON.parse(readFileSync(path, 'utf-8')) as CalibrationRawCase[];
+  return raw.map((c) => ({ ...fileCaseToEvalCase(c), expectedVerdict: c.expected_verdict }));
 }
 
 interface CliOptions {
   suiteIds?: number[];
   projectId?: number;
   filePath?: string;
+  calibrate: boolean;
   verbose: boolean;
 }
 
 function parseArgs(argv: string[]): CliOptions {
-  const options: CliOptions = { verbose: false };
+  const options: CliOptions = { calibrate: false, verbose: false };
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
     if (arg === '--suite') {
@@ -344,23 +440,35 @@ function parseArgs(argv: string[]): CliOptions {
       options.projectId = Number(argv[++i]);
     } else if (arg === '--file') {
       options.filePath = argv[++i];
+    } else if (arg === '--calibrate') {
+      options.calibrate = true;
     } else if (arg === '--verbose') {
       options.verbose = true;
     } else {
       throw new Error(`Unrecognized argument: ${arg}`);
     }
   }
-  if (!options.suiteIds && !options.filePath) {
-    throw new Error('Provide either --suite <id>[,<id>...] or --file <path>.');
+  if (!options.suiteIds && !options.filePath && !options.calibrate) {
+    throw new Error('Provide one of --suite <id>[,<id>...], --file <path>, or --calibrate.');
   }
   return options;
 }
 
-function printDetail(evalCase: EvalCase, evaluation: Evaluation): void {
+type OkResult = Extract<CaseResult, { status: 'ok' }>;
+
+function printDetail(r: OkResult): void {
+  const { evalCase, evaluation, codeGrade, modelScore, finalScore, finalVerdict } = r;
   console.log(`\n${evalCase.caseId} — ${evalCase.title}`);
-  console.log(`  Verdict: ${evaluation.verdict}`);
   console.log(
-    `  Scores: traceability=${evaluation.scores.traceability} ` +
+    `  Final verdict: ${finalVerdict}  (final_score=${finalScore.toFixed(2)} = ` +
+      `code_score=${codeGrade.score.toFixed(2)}*0.3 + model_score=${modelScore.toFixed(2)}*0.7; ` +
+      `model's own verdict field: ${evaluation.verdict})`
+  );
+  console.log(
+    `  Code grader: ${codeGrade.checks.map((c) => `${c.name}=${c.pass ? 'pass' : `FAIL(${c.detail})`}`).join(', ')}`
+  );
+  console.log(
+    `  Model scores: traceability=${evaluation.scores.traceability} ` +
       `constraint_awareness=${evaluation.scores.constraint_awareness} ` +
       `clarity=${evaluation.scores.clarity} ` +
       `coverage_balance=${evaluation.scores.coverage_balance}`
@@ -380,26 +488,25 @@ function printReport(results: CaseResult[], verbose: boolean): void {
       console.log(`${r.evalCase.caseId}  ERROR (see log above)                — ${r.evalCase.title}`);
       continue;
     }
-    const s = r.evaluation.scores;
     console.log(
-      `${r.evalCase.caseId}  ${r.evaluation.verdict.toUpperCase().padEnd(14)} ` +
-        `[trace ${s.traceability} constraint ${s.constraint_awareness} clarity ${s.clarity} coverage ${s.coverage_balance}]` +
+      `${r.evalCase.caseId}  ${r.finalVerdict.toUpperCase().padEnd(14)} ` +
+        `[final ${r.finalScore.toFixed(2)} = code ${r.codeGrade.score.toFixed(1)}*0.3 + model ${r.modelScore.toFixed(1)}*0.7]` +
         `  ${r.evalCase.title}`
     );
   }
 
-  const okResults = results.filter((r): r is Extract<CaseResult, { status: 'ok' }> => r.status === 'ok');
-  const needsRevision = okResults.filter((r) => r.evaluation.verdict === 'needs_revision');
+  const okResults = results.filter((r): r is OkResult => r.status === 'ok');
+  const needsRevision = okResults.filter((r) => r.finalVerdict === 'needs_revision');
   const failed = results.filter((r): r is Extract<CaseResult, { status: 'error' }> => r.status === 'error');
 
   if (verbose) {
     console.log('\n--- Full detail (all evaluated cases, --verbose) ---');
-    for (const r of okResults) printDetail(r.evalCase, r.evaluation);
+    for (const r of okResults) printDetail(r);
   }
 
   if (needsRevision.length > 0) {
     console.log(`\n--- NEEDS REVISION (${needsRevision.length}) ---`);
-    for (const r of needsRevision) printDetail(r.evalCase, r.evaluation);
+    for (const r of needsRevision) printDetail(r);
   } else {
     console.log('\nNo cases flagged needs_revision.');
   }
@@ -415,6 +522,34 @@ function printReport(results: CaseResult[], verbose: boolean): void {
   console.log(`\nSummary: ${okResults.length} evaluated, ${needsRevision.length} needs_revision, ${failed.length} failed.`);
 }
 
+function printCalibrationReport(results: CaseResult[]): void {
+  console.log('\n=== Calibration run: final_verdict vs expected_verdict ===\n');
+
+  const okResults = results.filter((r): r is OkResult => r.status === 'ok');
+  let correct = 0;
+
+  for (const r of results) {
+    if (r.status === 'error') {
+      console.log(`${r.evalCase.caseId}  ERROR — could not evaluate (see log above) — ${r.evalCase.title}`);
+      continue;
+    }
+    const expected = r.evalCase.expectedVerdict ?? '(no expected_verdict in dataset)';
+    const match = r.finalVerdict === r.evalCase.expectedVerdict;
+    if (match) correct++;
+    console.log(
+      `${r.evalCase.caseId}  ${match ? 'MATCH   ' : 'MISMATCH'}  expected=${expected}  actual=${r.finalVerdict}` +
+        `  (final_score=${r.finalScore.toFixed(2)})  — ${r.evalCase.title}`
+    );
+  }
+
+  const total = okResults.length;
+  const accuracy = total > 0 ? (correct / total) * 100 : 0;
+  console.log(`\nAccuracy: ${correct}/${total} (${accuracy.toFixed(1)}%)`);
+  if (results.length !== total) {
+    console.log(`${results.length - total} case(s) failed to evaluate and were excluded from accuracy.`);
+  }
+}
+
 async function main(): Promise<void> {
   const options = parseArgs(process.argv.slice(2));
 
@@ -427,9 +562,11 @@ async function main(): Promise<void> {
 
   let cases: EvalCase[];
   try {
-    cases = options.filePath
-      ? loadCasesFromFile(options.filePath)
-      : await loadCasesFromTestRail(options.suiteIds!, options.projectId);
+    cases = options.calibrate
+      ? loadCalibrationDataset()
+      : options.filePath
+        ? loadCasesFromFile(options.filePath)
+        : await loadCasesFromTestRail(options.suiteIds!, options.projectId);
   } catch (error) {
     console.error('[eval-testcases] Failed to load cases:', error instanceof Error ? error.message : error);
     process.exitCode = 1;
@@ -452,8 +589,12 @@ async function main(): Promise<void> {
     for (let attempt = 1; attempt <= MAX_ATTEMPTS_PER_CASE && !evaluated; attempt++) {
       try {
         const evaluation = await evaluateCase(evalCase, apiKey);
-        results.push({ evalCase, status: 'ok', evaluation });
-        console.log(`[eval-testcases] Evaluated ${evalCase.caseId} — verdict: ${evaluation.verdict}`);
+        const codeGrade = gradeCaseWithCode(evalCase);
+        const modelScore = averageModelScore(evaluation.scores);
+        const finalScore = computeFinalScore(codeGrade, evaluation);
+        const finalVerdict: 'pass' | 'needs_revision' = finalScore >= PASS_THRESHOLD ? 'pass' : 'needs_revision';
+        results.push({ evalCase, status: 'ok', evaluation, codeGrade, modelScore, finalScore, finalVerdict });
+        console.log(`[eval-testcases] Evaluated ${evalCase.caseId} — final verdict: ${finalVerdict} (score ${finalScore.toFixed(2)})`);
         evaluated = true;
       } catch (error) {
         lastMessage = error instanceof Error ? error.message : String(error);
@@ -470,6 +611,9 @@ async function main(): Promise<void> {
   }
 
   printReport(results, options.verbose);
+  if (options.calibrate) {
+    printCalibrationReport(results);
+  }
 
   if (results.every((r) => r.status === 'error')) {
     process.exitCode = 1;
