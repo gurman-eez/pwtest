@@ -93,6 +93,20 @@ never show, or asserts a distinction the site can't make.
   - `page` auto-accepts native dialogs (`dialog.accept()`) — the Contact Us form's Submit
     button calls `confirm("Press OK to proceed!")`; without this listener Playwright leaves the
     dialog open and the action hangs forever.
+  - `page` also captures browser console errors (`console` events where `type() === 'error'`)
+    and failed network requests (`requestfailed`), capped at 20 entries each (text truncated to
+    500 chars/entry) to bound report size. Several patterns are filtered as confirmed-live noise
+    that fires on **every** page load regardless of pass/fail, not per-test signal: `requestfailed`
+    excludes `net::ERR_ABORTED` (ordinary navigation cancelling in-flight requests) and anything
+    off automationexercise.com's own origin (the site embeds a Google AdSense script that fails
+    to resolve in this test environment on every load); console capture excludes `Mixed Content:`
+    messages (the site's own HTML links `http://` Google Fonts on an `https://` page) and generic
+    `Failed to load resource:` browser logs (duplicates the already-filtered `requestfailed`
+    capture, with no URL in the text to filter on directly). Attached via
+    `testInfo.attach('console-and-network', ...)` as JSON, only when at least one entry survives
+    filtering (mirrors `screenshot: 'only-on-failure'` — no attachment noise on a passing test).
+    Read back by `publish-testrail-results.ts`'s `lastConsoleAndNetworkLogs()` and passed to
+    `scripts/classify-failure.ts` as direct evidence for the `infrastructure_issue` category.
 - **`api/api-client.ts`** — thin wrapper around the 14 documented endpoints at
   `/api_list`. Constructs form bodies, never inspects HTTP status (see constraint #5 above).
 - **`utils/test-data.ts`** — `buildRandomAccount()` generates a unique throwaway account
@@ -110,10 +124,11 @@ never show, or asserts a distinction the site can't make.
   `verify-integrations.ts` (connectivity smoke check), `eval-testcases.ts` (LLM-judge TestRail
   case-quality scoring, `--calibrate` mode against a known-verdict dataset — see
   `.claude/commands/eval-calibrate.md`), `classify-failure.ts` (LLM-judge failure
-  classification from a screenshot — `visual_regression` / `unexpected_content` /
-  `logic_error` / `infrastructure_issue` — called by `publish-testrail-results.ts` right before
-  filing a Jira bug for a stable failure; exported `classifyFailure()` never throws, so a
-  classification failure never blocks filing the bug itself).
+  classification from a screenshot plus captured browser console errors/failed network requests
+  when present — `visual_regression` / `unexpected_content` / `logic_error` /
+  `infrastructure_issue` — called by `publish-testrail-results.ts` right before filing a Jira bug
+  for a stable failure; exported `classifyFailure()` never throws, so a classification failure
+  never blocks filing the bug itself).
 
 ## Locators
 
@@ -219,6 +234,11 @@ never show, or asserts a distinction the site can't make.
   path/to/file.ts` (bypasses the broken `tsconfig.json` instead of fixing it out of scope).
   Re-confirmed live 2026-07-23 via `./node_modules/.bin/tsc --noEmit` (still broken, same two
   errors) — `add-coverage/contact-us` still hasn't landed as of this writing.
+  Additionally, per-file checks against `scripts/classify-failure.ts` can't use
+  `--module commonjs` (matching `tsconfig.json`'s intent) — that file's `import.meta` usage
+  (its `isMainModule` check) fails with `TS1343` under `commonjs`. Use `--module esnext
+  --moduleResolution bundler` instead for that file (and anything importing it, e.g.
+  `publish-testrail-results.ts`) — confirmed working 2026-07-29.
 - **The `rtk` bash-rewriting hook can silently mask a failing command's real output.**
   Confirmed 2026-07-23: `npx tsc --noEmit` run through the hook printed a filtered
   `"TypeScript compilation completed"` summary — reading as a clean pass — while the actual

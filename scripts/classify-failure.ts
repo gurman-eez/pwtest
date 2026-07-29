@@ -3,7 +3,10 @@
  * same shape as scripts/eval-testcases.ts (direct fetch to the Anthropic Messages API, no
  * Claude Code SDK/CLI, forced single tool call, strict runtime validation + bounded retry for
  * malformed tool calls), but multimodal: the request includes the failure screenshot as an
- * image content block, not just text.
+ * image content block, not just text. Also takes optional captured browser console
+ * errors/failed network requests (see fixtures/base.ts's 'console-and-network' attachment) as
+ * extra text evidence, mainly to ground the infrastructure_issue category in something more
+ * direct than what's visually inferable from the screenshot alone.
  *
  * Exports classifyFailure() for reuse from scripts/publish-testrail-results.ts (called only
  * for stable failures, right before a Jira bug is filed for one). Also runnable standalone —
@@ -53,6 +56,8 @@ interface FailureContext {
   testName: string;
   errorMessage: string;
   screenshotPath: string;
+  consoleErrors?: { type: string; text: string }[];
+  failedRequests?: { url: string; method: string; failure: string }[];
 }
 
 type Category = 'visual_regression' | 'unexpected_content' | 'logic_error' | 'infrastructure_issue';
@@ -83,7 +88,7 @@ const SUBMIT_CLASSIFICATION_TOOL = {
           'visual_regression: page rendered but looks visibly broken/misaligned/styled wrong. ' +
           'unexpected_content: page rendered fine but shows different text/data/state than the test expected (incl. a site quirk already documented as expected). ' +
           'logic_error: the screenshot shows the site behaving normally — the failure looks like a bug in the test\'s own assertion/flow, not the site. ' +
-          'infrastructure_issue: error page, blank/broken load, timeout-looking state, network failure — not a real assertion mismatch at all.',
+          'infrastructure_issue: error page, blank/broken load, timeout-looking state, network failure — not a real assertion mismatch at all. If captured browser console errors or failed network requests are present in the prompt, treat them as direct evidence for this category rather than only inferring it from the screenshot.',
       },
       confidence: { type: 'string', enum: ['high', 'medium', 'low'] },
       suggested_action: {
@@ -104,7 +109,30 @@ function guessMediaType(path: string): string {
   throw new Error(`Unsupported screenshot extension "${ext}" (expected .png/.jpg/.jpeg/.webp).`);
 }
 
+const PROMPT_SECTION_CHAR_LIMIT = 2000; // same cap lastErrorMessage() uses for errorMessage
+
+/** Renders captured console/network evidence for the prompt, or null when nothing was captured. */
+function renderConsoleAndNetwork(context: FailureContext): string | null {
+  const hasConsole = !!context.consoleErrors?.length;
+  const hasRequests = !!context.failedRequests?.length;
+  if (!hasConsole && !hasRequests) return null;
+
+  const lines: string[] = [];
+  if (hasConsole) {
+    lines.push('Browser console errors:');
+    lines.push(...context.consoleErrors!.map((e) => `- [${e.type}] ${e.text}`));
+  }
+  if (hasRequests) {
+    lines.push('Failed network requests:');
+    lines.push(...context.failedRequests!.map((r) => `- ${r.method} ${r.url} — ${r.failure}`));
+  }
+  const text = lines.join('\n');
+  return text.length > PROMPT_SECTION_CHAR_LIMIT ? `${text.slice(0, PROMPT_SECTION_CHAR_LIMIT)}\n... (truncated)` : text;
+}
+
 function buildPrompt(context: FailureContext, knownConstraints: string): string {
+  const consoleAndNetworkSection = renderConsoleAndNetwork(context);
+
   return `You are triaging one failed Playwright test against automationexercise.com, a demo e-commerce site used for test automation practice. You are given the failure screenshot (attached as an image) plus text context. Classify what actually went wrong.
 
 ## Known site/environment constraints
@@ -118,7 +146,7 @@ ${knownConstraints}
 - visual_regression: the page rendered but looks visibly broken (misaligned, missing styles, overlapping elements, broken layout).
 - unexpected_content: the page rendered fine but shows different text/data/state than the test expected — including a known site quirk from the list above being asserted against incorrectly.
 - logic_error: the screenshot shows the site behaving normally; the failure looks like it's in the test's own assertion or flow, not the site.
-- infrastructure_issue: error page, blank/broken load, timeout-looking state, or anything that looks like a network/environment failure rather than an assertion mismatch.
+- infrastructure_issue: error page, blank/broken load, timeout-looking state, or anything that looks like a network/environment failure rather than an assertion mismatch. Captured console errors or failed network requests below are direct evidence for this category, not just an inference from the screenshot.
 
 ## Required reasoning order
 Write "reasoning" first — concrete, specific observations from the screenshot and the error
@@ -132,7 +160,7 @@ classifications.)
 Test: ${context.testName}
 Error message from the Playwright report:
 ${context.errorMessage}
-
+${consoleAndNetworkSection ? `\nBrowser console errors and failed network requests captured during this test run (direct signal, not just what's visible in the screenshot):\n${consoleAndNetworkSection}\n` : ''}
 Call submit_classification now.`;
 }
 
