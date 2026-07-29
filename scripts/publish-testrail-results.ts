@@ -46,6 +46,9 @@ interface PWReportAttachment {
   name: string;
   contentType: string;
   path?: string;
+  /** base64-encoded — set for testInfo.attach({ body }) calls without a `path` (see JSONReporter's
+   * own serialization), e.g. fixtures/base.ts's 'console-and-network' attachment. */
+  body?: string;
 }
 
 interface PWReportResult {
@@ -99,6 +102,29 @@ function lastScreenshotPath(test: PWReportTest): string | null {
   const lastResult = test.results[test.results.length - 1];
   const screenshot = lastResult?.attachments?.find((a) => a.name === 'screenshot' && a.contentType === 'image/png');
   return screenshot?.path ?? null;
+}
+
+interface ConsoleAndNetworkLogs {
+  consoleErrors: { type: string; text: string }[];
+  failedRequests: { url: string; method: string; failure: string }[];
+}
+
+/** Decodes fixtures/base.ts's 'console-and-network' attachment, only present when something was captured. */
+function lastConsoleAndNetworkLogs(test: PWReportTest): ConsoleAndNetworkLogs | null {
+  const lastResult = test.results[test.results.length - 1];
+  const attachment = lastResult?.attachments?.find(
+    (a) => a.name === 'console-and-network' && a.contentType === 'application/json'
+  );
+  if (!attachment?.body) return null;
+  try {
+    return JSON.parse(Buffer.from(attachment.body, 'base64').toString('utf-8'));
+  } catch (error) {
+    console.error(
+      '[publish-testrail-results] Failed to parse console-and-network attachment:',
+      error instanceof Error ? error.message : error
+    );
+    return null;
+  }
 }
 
 function mapTrigger(eventName: string | undefined): string {
@@ -176,8 +202,15 @@ async function fileJiraBugsForStableFailures(
       }
 
       const screenshotPath = lastScreenshotPath(test);
+      const consoleAndNetwork = lastConsoleAndNetworkLogs(test);
       const classification = screenshotPath
-        ? await classifyFailure({ testName: spec.title, errorMessage: lastErrorMessage(test), screenshotPath })
+        ? await classifyFailure({
+            testName: spec.title,
+            errorMessage: lastErrorMessage(test),
+            screenshotPath,
+            consoleErrors: consoleAndNetwork?.consoleErrors,
+            failedRequests: consoleAndNetwork?.failedRequests,
+          })
         : null;
       if (!screenshotPath) {
         console.log(`[publish-testrail-results] No failure screenshot for "${spec.title}" — filing without AI classification.`);
