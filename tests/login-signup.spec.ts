@@ -106,17 +106,4 @@ test.describe('Login & Signup', () => {
   });
   // источник: флоу 03 исследования — Logout ведёт на /logout и редиректит на /login,
   // навбар возвращается к состоянию гостя.
-
-  // TEMPORARY — deliberately fails to verify scripts/classify-failure.ts's console/network
-  // signal end-to-end in CI with a real ANTHROPIC_API_KEY. Remove before merging this PR.
-  test('TEMPORARY: verify AI failure classification end-to-end (remove before merging)', async ({ page }) => {
-    await page.route('**automationexercise.com/api/**', (route) => route.abort('failed'));
-    await page.goto('/');
-    await page.evaluate(() => {
-      console.error('deliberate verification console error — remove this test before merging');
-      fetch('/api/productsList').catch(() => {});
-    });
-    await page.waitForTimeout(500);
-    expect(true).toBe(false);
-  });
 });
