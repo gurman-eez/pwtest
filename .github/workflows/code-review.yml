@@ -14,6 +14,10 @@ jobs:
       contents: read
       pull-requests: write
       issues: write
+      # claude-code-action exchanges an OIDC token for its GitHub App token; without this the
+      # action fails immediately with "Could not fetch an OIDC token" (confirmed live in
+      # run 30467123815 before this was added).
+      id-token: write
     steps:
       - uses: anthropics/claude-code-action@v1
         with:
