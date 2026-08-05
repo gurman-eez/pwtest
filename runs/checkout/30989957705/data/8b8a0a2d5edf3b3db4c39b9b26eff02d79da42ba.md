@@ -82,7 +82,7 @@ Call log:
         - listitem [ref=e40]:
           - generic [ref=e41]:
             - generic [ref=e42]: 
-            - text: Logged in as qa-126dd9dc
+            - text: Logged in as qa-036cfb55
   - generic [ref=e44]:
     - list [ref=e46]:
       - listitem [ref=e47]:
@@ -95,7 +95,7 @@ Call log:
       - list [ref=e55]:
         - listitem [ref=e56]:
           - heading [level=3] [ref=e57]: Your delivery address
-        - listitem [ref=e58]: Mrs. QA Auto126dd9dc
+        - listitem [ref=e58]: Mrs. QA Auto036cfb55
         - listitem [ref=e59]: Test Co
         - listitem [ref=e60]: 1 Automation Way
         - listitem [ref=e61]: New York NY 10001
@@ -104,7 +104,7 @@ Call log:
       - list [ref=e65]:
         - listitem [ref=e66]:
           - heading [level=3] [ref=e67]: Your billing address
-        - listitem [ref=e68]: Mrs. QA Auto126dd9dc
+        - listitem [ref=e68]: Mrs. QA Auto036cfb55
         - listitem [ref=e69]: Test Co
         - listitem [ref=e70]: 1 Automation Way
         - listitem [ref=e71]: New York NY 10001
@@ -155,13 +155,13 @@ Call log:
     - generic [ref=e117]:
       - heading [level=2] [ref=e119]: Discover more
       - link [ref=e120] [cursor=pointer]:
-        - generic [ref=e121]: Automation testing software
+        - generic [ref=e121]: Food & Grocery Delivery
         - img [ref=e123]
       - link [ref=e125] [cursor=pointer]:
-        - generic [ref=e126]: Subscription management systems
+        - generic [ref=e126]: TV & Video Equipment
         - img [ref=e128]
       - link [ref=e130] [cursor=pointer]:
-        - generic [ref=e131]: Software
+        - generic [ref=e131]: Development Tools
         - img [ref=e133]
   - contentinfo [ref=e135]:
     - generic [ref=e140]:
@@ -173,14 +173,9 @@ Call log:
           - generic [ref=e145]: 
         - paragraph [ref=e146]: Get the most recent updates from our site and be updated your self...
     - paragraph [ref=e150]: Copyright © 2021 All rights reserved
-  - generic [ref=e151]:
-    - generic [ref=e152] [cursor=pointer]:
-      - img [ref=e154]
-      - link [ref=e156]: E commerce automation tools
-    - button [ref=e157]
-  - link [ref=e159] [cursor=pointer]:
+  - link [ref=e151] [cursor=pointer]:
     - /url: "#top"
-    - generic [ref=e160]: 
+    - generic [ref=e152]: 
 ```
 
 # Test source
